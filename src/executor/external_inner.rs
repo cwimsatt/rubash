@@ -3498,8 +3498,7 @@ impl Executor {
             if !env_composed_final {
                 process.env("SHLVL", self.exec_replace_adjusted_shlvl());
             }
-            use std::os::unix::process::CommandExt;
-            let error = process.exec();
+            let error = crate::exec_gate::exec(&mut process);
             let _ = self.report_external_spawn_error(cmd, program, error);
             std::process::exit(self.exit_code);
         }
@@ -3530,7 +3529,7 @@ impl Executor {
         {
             Err(std::io::Error::from_raw_os_error(8))
         } else {
-            process.spawn()
+            crate::exec_gate::spawn(&mut process)
         };
         // Drop the Command NOW: std retains every `Stdio::from(..)` it was
         // given (the #144 shared capture-pipe write clones among them), so a

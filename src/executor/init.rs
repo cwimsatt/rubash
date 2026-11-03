@@ -1310,7 +1310,7 @@ impl Executor {
             pending_own_binding_folds: Vec::new(),
             #[cfg(windows)]
             elevation_handler: None,
-            external_file_builtins_enabled: true,
+            external_file_builtins_enabled: crate::exec_gate::emulated_externals_allowed(),
             process_env_snapshot,
             env_write_journal,
             history_provider: None,

@@ -82,7 +82,9 @@ fn own_login_shell() -> bool {
 static STARTUP_FILES_DONE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-fn main() {
+// safebash: crates/safebash includes this file as a module and calls
+// main() after installing its execution gate.
+pub(crate) fn main() {
     drop_undecodable_environment_entries();
 
     let handle = std::thread::Builder::new()

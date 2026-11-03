@@ -3631,7 +3631,7 @@ impl Executor {
             .stderr(self.procsub_plan_stdio(spawn_plan.get(2)));
         process.current_dir(&self.shell_state.cwd);
         suppress_orphan_console(&mut process);
-        let spawn_result = process.spawn();
+        let spawn_result = crate::exec_gate::spawn(&mut process);
         for dup in parent_side_dups {
             crate::fd::close_handle(dup);
         }

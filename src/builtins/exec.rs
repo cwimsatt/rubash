@@ -219,10 +219,7 @@ pub(crate) fn replace_process_image(
     }
     let _ = io::stdout().flush();
     let _ = io::stderr().flush();
-    let error = {
-        use std::os::unix::process::CommandExt;
-        process.exec()
-    };
+    let error = crate::exec_gate::exec(&mut process);
     if error.raw_os_error() == Some(libc::ENOEXEC) {
         return None;
     }
@@ -601,8 +598,7 @@ where
     process.stdin(child_stdin);
 
     let mut spawned_pid = 0;
-    match process
-        .spawn()
+    match crate::exec_gate::spawn(&mut process)
         .inspect(|child| crate::executor::path::adopt_orphan_console(child.id()))
         .and_then(|child| {
             spawned_pid = child.id();
@@ -662,8 +658,7 @@ where
     process.stdin(child_stdin);
 
     let mut spawned_pid = 0;
-    match process
-        .spawn()
+    match crate::exec_gate::spawn(&mut process)
         .inspect(|child| crate::executor::path::adopt_orphan_console(child.id()))
         .and_then(|mut child| {
             spawned_pid = child.id();

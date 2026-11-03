@@ -240,6 +240,10 @@ impl Executor {
                 .map(str::to_string)
                 .unwrap_or(expanded),
         };
+        // safebash: every file-redirection operand passes the host
+        // execution gate once per command execution span (the memo below
+        // replays the verdict for later lookups of the same redirect).
+        let expanded = self.exec_gate_redirect_target(redirect, expanded);
         self.redirect_target_memo
             .borrow_mut()
             .insert(key.clone(), expanded.clone());

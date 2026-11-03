@@ -1331,7 +1331,7 @@ impl Executor {
             }
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            match process.spawn() {
+            match crate::exec_gate::spawn(&mut process) {
                 Ok(child) => {
                     let pid = child.id();
                     adopt_orphan_console(pid);
@@ -5397,7 +5397,7 @@ impl Executor {
                     child.env(key, value);
                 }
             }
-            match child.spawn() {
+            match crate::exec_gate::spawn(&mut child) {
                 Ok(mut child_proc) => {
                     // Rubash does not expose real coproc file descriptors yet,
                     // but keep the parent ends until after spawn so stdio uses

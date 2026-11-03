@@ -535,6 +535,16 @@ impl Executor {
         // continue with the remaining command.
         let cmd = self.strip_invalid_env_assignment_prefixes(&cmd);
 
+        // safebash: the host execution gate (crate::exec_gate) judges the
+        // expanded command and its expanded redirection targets before any
+        // dispatch — functions, builtins, emulated externals and child
+        // processes alike. A denied command does not run; it finishes with
+        // status 126 after the gate's diagnostic is reported.
+        if self.exec_gate_denies(&cmd) {
+            self.exit_code = crate::exec_gate::DENIED_STATUS;
+            return Ok(());
+        }
+
         let dispatch_result = if let Some(result) = self.execute_function_command_invocation(&cmd) {
             result
         } else if self.execute_assignment_or_comment_command(&cmd) {

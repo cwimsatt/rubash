@@ -2719,7 +2719,7 @@ impl Executor {
                 self.attach_ambient_text_delivery(consumers[index], &mut process);
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            let spawned = process.spawn();
+            let spawned = crate::exec_gate::spawn(&mut process);
             for dup in parent_side_dups {
                 crate::fd::close_handle(dup);
             }
@@ -3481,7 +3481,7 @@ impl Executor {
                 self.attach_ambient_text_delivery(&commands[index], &mut process);
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            let spawned = process.spawn();
+            let spawned = crate::exec_gate::spawn(&mut process);
             for dup in parent_side_dups {
                 crate::fd::close_handle(dup);
             }
@@ -3768,7 +3768,7 @@ impl Executor {
             let parent_side_dups = self.attach_ambient_text_delivery(commands[index], &mut process);
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            let spawned = process.spawn();
+            let spawned = crate::exec_gate::spawn(&mut process);
             for dup in parent_side_dups {
                 crate::fd::close_handle(dup);
             }
@@ -4145,7 +4145,7 @@ impl Executor {
             let parent_side_dups = self.attach_ambient_text_delivery(command, &mut process);
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            let spawned = process.spawn();
+            let spawned = crate::exec_gate::spawn(&mut process);
             for dup in parent_side_dups {
                 crate::fd::close_handle(dup);
             }
@@ -4758,7 +4758,7 @@ impl Executor {
                 self.attach_ambient_text_delivery(&commands[index], &mut process);
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            let spawned = process.spawn();
+            let spawned = crate::exec_gate::spawn(&mut process);
             for dup in parent_side_dups {
                 crate::fd::close_handle(dup);
             }

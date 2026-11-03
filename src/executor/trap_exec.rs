@@ -4442,7 +4442,7 @@ impl Executor {
                 child.pre_exec(move || super::external_inner::pin_ambient_fds_in_child(&pins));
             }
         }
-        match child.spawn() {
+        match crate::exec_gate::spawn(&mut child) {
             Ok(child_proc) => {
                 for dup in &ambient_fd_dups {
                     crate::fd::close_handle(*dup);
