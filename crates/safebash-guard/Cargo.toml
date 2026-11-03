@@ -1,0 +1,20 @@
+[package]
+name = "safebash-guard"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Command-safety policy engine for safebash: decides whether a shell command an LLM agent issued may run"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+regex = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
