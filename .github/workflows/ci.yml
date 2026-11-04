@@ -107,14 +107,15 @@ jobs:
       # safebash port: the always-compiled Windows rules also run on Linux
       # (Posix style), and this proves no false positives on ordinary shell.
       # Separate steps keep the engine's default-member selection above
-      # untouched. The corpus tests (brush_compat, harvested) are excluded:
-      # their fixtures are not in the tree.
+      # untouched. The corpus fixtures (brush_compat, harvested) are tracked
+      # under crates/safebash/tests/data, so those over-block guards run here.
       - name: Build safebash and rubash binaries (Linux)
         run: cargo build -p rubash -p safebash
       - name: Run safebash crate tests (Linux)
         run: >-
           cargo test -p safebash-guard --lib &&
           cargo test -p safebash --test contract --test respawn_gate
+          --test brush_compat --test harvested
 
   # rubash#2176: cli_tests used to run as a continue-on-error step inside
   # the rust job above, which made its reds invisible -- the job showed
@@ -230,15 +231,17 @@ jobs:
       # safebash port: this native-Windows job is where the always-compiled
       # Windows rules, the Windows console path, and the respawn-gate proof
       # run for real. Build both binaries so the respawn-gate attack test
-      # finds a plain `rubash` next to `safebash` (else it skips). The two
-      # corpus tests (brush_compat, harvested) are NOT run here: their JSONL
-      # fixtures are not in the tree.
+      # finds a plain `rubash` next to `safebash` (else it skips). The corpus
+      # fixtures (brush_compat, harvested) are tracked under
+      # crates/safebash/tests/data, so those over-block guards run here too.
       - name: Build safebash and rubash binaries (Windows)
         run: cargo build -p rubash -p safebash
       - name: Run safebash-guard unit tests (Windows)
         run: cargo test -p safebash-guard --lib
       - name: Run safebash contract and respawn-gate tests (Windows)
         run: cargo test -p safebash --test contract --test respawn_gate
+      - name: Run safebash corpus over-block guards (Windows)
+        run: cargo test -p safebash --test brush_compat --test harvested
 
       # Re-record protocol runner leg (see tests/regression.rs module
       # header): record the suite snapshots with THIS runner's engine and
