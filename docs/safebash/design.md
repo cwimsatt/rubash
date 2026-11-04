@@ -211,18 +211,44 @@ assignments. I/O errors are swallowed — auditing never changes a decision.
 
 ## Windows
 
-Linux is the first port; the design is Windows-aware throughout:
+Linux is the first port; the design is Windows-aware throughout, and the
+Windows port (this cycle) is implemented and compiles on the
+`x86_64-pc-windows-msvc` target. Runtime acceptance — the console prompt
+driven through a real console, the device-rule blocks, the
+in-workspace-versus-root smoke matrix and the bash-compatibility sweeps — is
+the remaining step and is **not** performed in this compile-only cycle.
 
 - the engine already runs natively on Windows (rubash's fork-free model);
-- `paths.rs` folds `C:\x`, `c:/x` and MSYS `/c/x` to one case-insensitive
-  form, and handles drive and UNC roots;
-- the `cmd /c` and `powershell`/`pwsh` analyzers (`rules/windows.rs`) ship
-  in the Linux build because they are reachable from a POSIX shell (WSL
-  interop, Git Bash habits) and are the native path on Windows;
-- `platform.rs` has a Windows arm for config/state dirs; the one piece not
-  yet implemented is the Windows console confirmation prompt
-  (`CONIN$`/`CONOUT$` plus a `GetConsoleProcessList` foreground check) —
-  until then a `Confirm` denies on Windows rather than prompting.
+- `paths.rs` folds `C:\x`, `c:/x`, MSYS `/c/x`, WSL `/mnt/c/x` and Cygwin
+  `/cygdrive/c/x` to one case-insensitive `c:/…` form, treats a bare `/` as
+  the root, rewrites the extended UNC prefix `\\?\UNC\server\share`, and
+  handles drive and UNC roots — mirroring the engine's own
+  `executor/path.rs::shell_path_to_windows_inner`, so the guard agrees with
+  how the shell resolves an operand. The value the gate receives is the
+  native `shell_state.cwd` (not the displayed POSIX `$PWD`), which folds to
+  the same `NormPath` as the workspace anchor;
+- the `cmd /c` and `powershell`/`pwsh` analyzers (`rules/windows.rs`) ship in
+  the Linux build (reachable from a POSIX shell via WSL interop / Git Bash
+  habits) and are the native path on Windows. Windows disk-destruction rules
+  (`rules/device.rs`, `rules/redirect.rs`, `rules/windows.rs`) cover
+  `format`/`format.com`, `diskpart` clean/delete/script, `cipher /w`,
+  `sdelete`, the PowerShell storage cmdlets (`Clear-Disk`, `Remove-Partition`,
+  `Reset-PhysicalDisk`, `Format-Volume`), `Clear-Content` to a raw device,
+  and writes to a `\\.\PhysicalDrive`, `\\.\<drive>:` or `\\.\Volume{…}`
+  device — all `ManualOnly` (confirmable), like the Linux `disk.erase`
+  family. The PowerShell storage recognition is best-effort inspection of the
+  `-Command` argument (the cmdlet runs inside `powershell.exe`, a child
+  process the gate does not contain); it catches the literal, commented,
+  module-qualified and backtick-escaped spellings, not a name built
+  dynamically at run time;
+- `platform.rs` has a Windows arm for config/state dirs, and the Windows
+  console confirmation prompt is implemented: it opens `CONIN$`/`CONOUT$`
+  directly (a redirected or piped stdin cannot answer) and requires an
+  attached interactive console (`GetConsoleProcessList`/`GetConsoleWindow`).
+  This is **weaker than the Unix foreground check** — Windows has no cheap
+  "am I the foreground job" test, so the honest guarantee is "a real console
+  session is present", not "no background pane can answer"; with no usable
+  console a `Confirm` denies, as on Unix with no tty.
 
 ## Phases
 
@@ -232,8 +258,14 @@ Linux is the first port; the design is Windows-aware throughout:
    suites. Windows-aware but not yet verified on Windows.
 2. **Jev secondary check:** wire a TypeSafe Jev second opinion behind the
    deterministic rules (§7), in shadow mode first.
-3. **Windows verification:** the console confirmation prompt and the
-   `full-check-windows`-style CI cross-check.
+3. **Windows verification:** the Windows port of the confirmation prompt,
+   the path folding and the device rules is implemented and compiles on the
+   MSVC target, with the `contract` and `respawn_gate` tests wired into the
+   Windows CI job (`.github/workflows/ci.yml`). What remains is *running*
+   them — the console prompt through a real console, the device-rule blocks,
+   the in-workspace-versus-root smoke matrix, and the Oils/brush
+   bash-compatibility sweeps — none of which is run in this compile-only
+   cycle.
 
 ## 7. The reserved Jev interface
 

@@ -11,9 +11,13 @@
 //!   "yes" does not run a destructive command;
 //! - with no usable terminal it denies instead of half-prompting.
 //!
-//! Windows reads `CONIN$`/`CONOUT$`; the foreground check there is the
-//! console's process list (not implemented yet: the prompt denies on
-//! Windows until it is).
+//! Windows reads `CONIN$`/`CONOUT$`; it has no foreground-process-group
+//! test, so it checks only that an interactive console session is attached
+//! (`GetConsoleProcessList`/`GetConsoleWindow`) — a weaker guarantee than
+//! the Unix foreground check, and stated as such: opening `CONIN$` means a
+//! redirected/pipe stdin cannot answer, and with no usable console the
+//! prompt denies, but a background process sharing the console could still
+//! answer.
 
 use std::path::PathBuf;
 
@@ -126,13 +130,186 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use super::Confirmation;
+    use super::{challenge_token, Confirmation};
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetConsoleProcessList, GetConsoleWindow, ReadConsoleW, WriteConsoleW,
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    };
 
-    pub fn confirm(_summary: &str, _command: &str) -> Confirmation {
-        // Windows phase: CONIN$/CONOUT$ prompt plus a
-        // GetConsoleProcessList foreground check. Until then a confirmation
-        // can never be obtained, so Confirm findings deny.
-        Confirmation::Unavailable
+    /// Owns a console handle and closes it on drop, so every return path —
+    /// including the second open failing — releases the first.
+    struct Handle(HANDLE);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            // SAFETY: a valid handle from CreateFileW, closed exactly once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Open a console pseudo-file (`CONIN$`/`CONOUT$`). Opening the console
+    /// directly, not stdin/stdout, is the Windows analogue of `/dev/tty`: a
+    /// redirected or piped standard stream cannot supply the answer.
+    fn open(name: &str) -> Option<Handle> {
+        let wide: Vec<u16> = OsStr::new(name)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `wide` is NUL-terminated; null security attributes/template.
+        let h = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if h == INVALID_HANDLE_VALUE || h.is_null() {
+            None
+        } else {
+            Some(Handle(h))
+        }
+    }
+
+    /// The console mode, if `h` is a usable console handle. Queried only —
+    /// never set — so a failure mid-prompt cannot strand the console.
+    fn console_mode(h: HANDLE) -> Option<u32> {
+        let mut mode = 0u32;
+        // SAFETY: valid handle; writes a single u32.
+        if unsafe { GetConsoleMode(h, &mut mode) } != 0 {
+            Some(mode)
+        } else {
+            None
+        }
+    }
+
+    /// A real interactive console session is attached to this process.
+    /// Weaker than Unix foreground detection: it proves a console session
+    /// exists, not that no other pane could answer.
+    fn console_attached() -> bool {
+        // SAFETY: neither call takes input parameters that can be invalid.
+        if unsafe { GetConsoleWindow() }.is_null() {
+            return false;
+        }
+        let mut list = [0u32; 1];
+        unsafe { GetConsoleProcessList(list.as_mut_ptr(), 1) >= 1 }
+    }
+
+    fn write_all(h: HANDLE, text: &str) -> bool {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut done = 0usize;
+        while done < wide.len() {
+            let mut written = 0u32;
+            // SAFETY: valid handle; the pointer/length describe the unwritten
+            // tail. A WriteConsoleW failure or zero progress means the prompt
+            // did not fully reach the console, so the caller must deny rather
+            // than treat a partial write as a complete prompt.
+            let ok = unsafe {
+                WriteConsoleW(
+                    h,
+                    wide[done..].as_ptr(),
+                    (wide.len() - done) as u32,
+                    &mut written,
+                    std::ptr::null(),
+                )
+            };
+            if ok == 0 || written == 0 {
+                return false;
+            }
+            done += written as usize;
+        }
+        true
+    }
+
+    pub fn confirm(summary: &str, command: &str) -> Confirmation {
+        let Some(input) = open("CONIN$") else {
+            return Confirmation::Unavailable;
+        };
+        let Some(output) = open("CONOUT$") else {
+            return Confirmation::Unavailable;
+        };
+        // The input handle must be a usable console input, and a real
+        // interactive console session must be attached; otherwise nobody can
+        // be asked and a Confirm becomes a denial, exactly as Unix with no
+        // tty.
+        if console_mode(input.0).is_none() || !console_attached() {
+            return Confirmation::Unavailable;
+        }
+        let token = challenge_token();
+        let expected = format!("confirm {token}");
+        let shown = crate::redact::redact(command);
+        // Red only when the output console already interprets VT sequences;
+        // never enable it ourselves (that would mutate the user's console).
+        let vt =
+            console_mode(output.0).is_some_and(|m| m & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0);
+        let prompt = if vt {
+            format!(
+                "\n\x1b[0;31m[safebash] {summary}\x1b[0m\n  {shown}\nType \"{expected}\" to run it (anything else cancels): "
+            )
+        } else {
+            format!(
+                "\n[safebash] {summary}\n  {shown}\nType \"{expected}\" to run it (anything else cancels): "
+            )
+        };
+        if !write_all(output.0, &prompt) {
+            return Confirmation::Unavailable;
+        }
+        // One complete line. A single ReadConsoleW may return a short read
+        // (or a full buffer that is not a whole line), and in character mode
+        // Enter arrives as `\r`; accumulate until a terminator or a cap, and
+        // treat a cap with no terminator as no answer (deny).
+        let mut reply = String::new();
+        let mut buf = [0u16; 256];
+        let mut got_line = false;
+        for _ in 0..16 {
+            let mut read = 0u32;
+            // SAFETY: valid handle; buffer pointer/length consistent; a null
+            // input-control pointer is allowed.
+            let ok = unsafe {
+                ReadConsoleW(
+                    input.0,
+                    buf.as_mut_ptr() as *mut core::ffi::c_void,
+                    buf.len() as u32,
+                    &mut read,
+                    std::ptr::null(),
+                )
+            };
+            if ok == 0 {
+                return Confirmation::Unavailable;
+            }
+            if read == 0 {
+                break; // end of input with no terminator
+            }
+            let chunk = String::from_utf16_lossy(&buf[..read as usize]);
+            if let Some(end) = chunk.find(['\r', '\n']) {
+                reply.push_str(&chunk[..end]);
+                got_line = true;
+                break;
+            }
+            reply.push_str(&chunk);
+            if reply.len() > 4096 {
+                break;
+            }
+        }
+        let _ = write_all(output.0, "\n");
+        if !got_line {
+            return Confirmation::Unavailable;
+        }
+        if reply.trim_end_matches(['\r', '\n']) == expected {
+            Confirmation::Approved
+        } else {
+            Confirmation::Declined
+        }
     }
 }
 

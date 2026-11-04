@@ -41,7 +41,12 @@ impl Tree {
     }
 
     pub fn host(&self, place: &Path) -> Host {
-        let style = PathStyle::native();
+        self.host_styled(place, PathStyle::native())
+    }
+
+    /// Like `host`, but with an explicit path style, so the always-compiled
+    /// Windows rules can be exercised from a Linux (Posix-native) build.
+    pub fn host_styled(&self, place: &Path, style: PathStyle) -> Host {
         let norm = |p: &Path| normalize_abs(p, style);
         // A dedicated scratch root, not the system temp dir: the whole
         // fixture lives under /tmp, so trusting /tmp would make the
@@ -83,9 +88,13 @@ impl Tree {
     }
 
     pub fn guard(&self, place: &Path, level: Level) -> Guard {
+        self.guard_styled(place, level, PathStyle::native())
+    }
+
+    pub fn guard_styled(&self, place: &Path, level: Level, style: PathStyle) -> Guard {
         let mut guard = Guard::new(
             Policy::preset(level),
-            self.host(place),
+            self.host_styled(place, style),
             Some(Box::new(RubashParser { posix: false })),
             AuditLog::disabled(),
         );

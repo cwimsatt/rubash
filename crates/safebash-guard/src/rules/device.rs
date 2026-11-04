@@ -10,6 +10,11 @@ const MKFS: &str = "mkfs formatting a /dev device erases everything on it. Ask t
 const DISK: &str = "This erases or repartitions a disk. Ask the user to run disk erase and partition commands manually after confirming the target.";
 const SHRED: &str = "shred permanently destroys the given target. Use rm for ordinary deletes, or ask the user to run shred manually.";
 const UNSHARE: &str = "unshare creating a user namespace grants root inside it, a common step toward privilege escalation. Ask the user to run it manually if it is needed.";
+const FORMAT: &str = "format writes a new filesystem to a volume, destroying its contents. Ask the user to run the format manually after confirming the drive.";
+const DISKPART: &str = "diskpart with a clean/delete verb or a /s script can wipe or repartition a disk. Ask the user to run diskpart manually after confirming the target.";
+const CIPHER_WIPE: &str = "cipher /w overwrites all free space on a volume. Ask the user to run it manually if it is needed.";
+const SDELETE: &str = "sdelete securely and unrecoverably deletes its target. Use rm for ordinary deletes, or ask the user to run sdelete manually.";
+const RAW_DEVICE: &str = "This writes directly to a raw disk or volume device, which can destroy it. Ask the user to run device writes manually after confirming the target.";
 
 fn is_mkfs(name: &str) -> bool {
     name == "mke2fs"
@@ -29,6 +34,14 @@ pub fn check(an: &Analyzer<'_>, cx: &Cx, name: &str, argv: &[Word]) {
                     .is_some_and(|d| !d.is_empty() && !matches!(d, "null" | "zero" | "full"))
             }) {
                 an.rule(cx, Finding::deny("dd.device-write", Intent::ManualOnly, DD));
+            } else if ops().any(|t| {
+                t.strip_prefix("of=")
+                    .is_some_and(crate::rules::redirect::is_windows_block_device)
+            }) {
+                an.rule(
+                    cx,
+                    Finding::deny("device.raw-device-write", Intent::ManualOnly, RAW_DEVICE),
+                );
             }
         }
         n if is_mkfs(n) => {
@@ -116,6 +129,81 @@ pub fn check(an: &Analyzer<'_>, cx: &Cx, name: &str, argv: &[Word]) {
             const EDITS: &[&str] = &["mklabel", "mktable", "mkpart", "rm", "resizepart"];
             if names_dev() && ops().any(|t| EDITS.contains(&t.to_ascii_lowercase().as_str())) {
                 an.rule(cx, Finding::deny("disk.erase", Intent::ManualOnly, DISK));
+            }
+        }
+        // Windows disk-destruction verbs. Always compiled (reachable from a
+        // POSIX shell via WSL/Git Bash and the native path on Windows), each
+        // ManualOnly like the disk.erase family above.
+        "format" | "format.com" => {
+            // `format C: /q`, `format /fs:ntfs D:` — a drive-letter operand.
+            if ops().any(|t| {
+                let b = t.as_bytes();
+                b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+            }) {
+                an.rule(
+                    cx,
+                    Finding::deny("device.format-volume", Intent::ManualOnly, FORMAT),
+                );
+            }
+        }
+        "diskpart" => {
+            // A destructive script (`/s file`) or an inline clean/delete verb.
+            let scripted = ops().any(|t| {
+                let l = t.to_ascii_lowercase();
+                l == "/s" || l.starts_with("/s:")
+            });
+            let verb = ops().any(|t| matches!(t.to_ascii_lowercase().as_str(), "clean" | "delete"));
+            if scripted || verb {
+                an.rule(
+                    cx,
+                    Finding::deny("device.diskpart", Intent::ManualOnly, DISKPART),
+                );
+            }
+        }
+        "cipher" => {
+            if ops().any(|t| {
+                let l = t.to_ascii_lowercase();
+                l == "/w" || l.starts_with("/w:")
+            }) {
+                an.rule(
+                    cx,
+                    Finding::deny("device.cipher-wipe", Intent::ManualOnly, CIPHER_WIPE),
+                );
+            }
+        }
+        "sdelete" | "sdelete64" => {
+            // Options `-p`/`-c`/`-f` take a numeric value (not a target); any
+            // remaining non-flag operand (a file, dir or drive) is the
+            // destructive target. Bare / help forms have no target.
+            let operands: Vec<String> = ops().map(|t| t.to_string()).collect();
+            let mut i = 0;
+            let mut has_target = false;
+            while i < operands.len() {
+                let t = &operands[i];
+                if t.starts_with('-') || t.starts_with('/') {
+                    let flag = t.trim_start_matches(['-', '/']).to_ascii_lowercase();
+                    if matches!(flag.as_str(), "p" | "c" | "f") {
+                        // These take an OPTIONAL numeric value; consume the
+                        // next operand only when it is numeric, so a drive
+                        // target (`sdelete -c C:`) is not eaten as a value.
+                        let numeric = operands.get(i + 1).is_some_and(|v| {
+                            !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())
+                        });
+                        if numeric {
+                            i += 1;
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+                has_target = true;
+                break;
+            }
+            if has_target {
+                an.rule(
+                    cx,
+                    Finding::deny("device.sdelete", Intent::ManualOnly, SDELETE),
+                );
             }
         }
         _ => {}

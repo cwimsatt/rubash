@@ -320,6 +320,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "windows-sys",
 ]
 
 [[package]]

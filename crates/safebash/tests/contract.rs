@@ -445,6 +445,186 @@ const CASES: &[(Level, Place, &str, &str)] = &[
         "allow",
         "git log --oneline -20",
     ),
+    // Windows disk-destruction verbs (net-new; ManualOnly, confirmable).
+    // These match on command name + operand strings, so they classify the
+    // same under Posix-native (Linux CI) and Windows style.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.format-volume",
+        "format C: /q",
+    ),
+    (Level::Standard, Place::Work, "allow", "format-hex data.bin"),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.diskpart",
+        "diskpart /s wipe.txt",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.cipher-wipe",
+        "cipher /w:C:",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.sdelete",
+        "sdelete -p 3 secret.txt",
+    ),
+    // `-c` cleans free space and does not take a value here, so the drive is
+    // the target; `-p 3` consumes its numeric value, leaving no target.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.sdelete",
+        "sdelete -c C:",
+    ),
+    (Level::Standard, Place::Work, "allow", "sdelete -p 3"),
+    (Level::Standard, Place::Work, "allow", "sdelete -?"),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Format-Volume -DriveLetter D'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0 -WhatIf'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0 -WhatIf:$false'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0 # -WhatIf'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.raw-device-write",
+        "powershell -Command 'Clear-Content \\\\.\\PhysicalDrive0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "allow",
+        "powershell -Command 'Clear-Content build.log'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "redirect.block-device",
+        "cat img > '\\\\.\\PhysicalDrive0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.raw-device-write",
+        "dd if=zero of='\\\\.\\PhysicalDrive0'",
+    ),
+    // There is no -WhatIf exemption: a storage cmdlet always blocks (like the
+    // Linux disk.erase family), so a quoted value, a comment, a false value
+    // and an unresolved variable all stay blocked.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Format-Volume -DriveLetter D -NewFileSystemLabel \"-WhatIf\"'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0 <# -WhatIf #>'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-Disk -Number 0 -WhatIf:$preview'",
+    ),
+    // A leading call operator still reaches the storage head.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command '& Clear-Disk -Number 0'",
+    ),
+    // A comment must not hide the cmdlet (it is recognized by token
+    // presence, not head position): leading, glued, nested, and
+    // separator-inside-comment forms are all caught.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command '<# maintenance #> Clear-Disk -Number 0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command '<#m#>Clear-Disk -Number 0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command '<# outer <# inner #> #> Clear-Disk -Number 0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command '<# maintenance; note #> Clear-Disk -Number 0'",
+    ),
+    // A backtick-escaped name and a module-qualified name are still caught.
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Clear-D`isk -Number 0'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "device.ps-storage-cmdlet",
+        "powershell -Command 'Storage\\Clear-Disk -Number 0'",
+    ),
+    // Read-only device INPUT (dd if=) and a file UNDER a volume path are not
+    // device writes; a bare GUID volume handle is.
+    (
+        Level::Standard,
+        Place::Work,
+        "allow",
+        "dd if='\\\\.\\PhysicalDrive0' of=out.img",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "allow",
+        "cat x > '\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\backup{old}'",
+    ),
+    (
+        Level::Standard,
+        Place::Work,
+        "redirect.block-device",
+        "cat x > '\\\\.\\Volume{01234567-89ab-cdef-0123-456789abcdef}'",
+    ),
 ];
 
 #[test]
@@ -481,4 +661,45 @@ fn pkg_audit_fix_force_confirms() {
     let report = guard.analyze_source("npm audit fix --force", Some(&tree.workspace));
     assert_eq!(report.action(), safebash_guard::verdict::Action::Confirm);
     assert_eq!(report.primary().unwrap().rule, "pkg.audit-fix-force");
+}
+
+/// T3 path reconciliation: the POSIX drive spellings an agent can type on
+/// Windows (`/`, `/mnt/c`, `/cygdrive/c`, `/c`) must fold to a drive root
+/// and be caught. Forced to Windows style so this runs from a Linux build.
+#[test]
+fn windows_path_contract() {
+    use safebash_guard::paths::PathStyle;
+    let tree = Tree::new("contract-win");
+    let cwd = tree.workspace.clone();
+    let guard = tree.guard_styled(&cwd, Level::Standard, PathStyle::Windows);
+    let cases: &[(&str, &str)] = &[
+        ("rm.recursive-force-root-or-home", "rm -rf /"),
+        ("rm.recursive-force-root-or-home", "rm -rf /mnt/c"),
+        ("rm.recursive-force-root-or-home", "rm -rf /cygdrive/c"),
+        ("rm.recursive-force-root-or-home", "rm -rf /c"),
+        // A glob whose base is the root, a parent-dir that collapses to a
+        // drive root, and a UNC share root reached through the shared ladder.
+        ("rm.recursive-force-root-or-home", "rm -rf /*"),
+        ("rm.recursive-force-root-or-home", "rm -rf /mnt/c/.."),
+        (
+            "rm.recursive-force-root-or-home",
+            "rm -rf '\\\\server\\share'",
+        ),
+        // In-workspace delete is allowed (proves the anchor converges, so the
+        // root cases above are detecting the fold, not a dead respawn).
+        ("allow", "rm -rf build"),
+        ("rm.recursive-force-outside-cwd", "rm -rf /etc/nginx"),
+    ];
+    let mut failures = Vec::new();
+    for (expected, command) in cases {
+        let got = verdict(&guard, command, &cwd);
+        if got != *expected {
+            failures.push(format!("{command:?}: expected {expected}, got {got}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "windows path contract:\n{}",
+        failures.join("\n")
+    );
 }

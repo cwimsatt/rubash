@@ -53,6 +53,26 @@ The bash-compatibility corpus (`tests/data/brush-compat-scripts.jsonl`,
 3,230 `stdin` scripts) as a false-positive oracle: `tests/brush_compat.rs`
 requires the block rate on real shell to stay under 3% (currently 0.00%).
 
+## Windows device family (this port)
+
+The Windows disk-destruction rules are net-new: `format`/`format.com`,
+`diskpart` (clean/delete or a `/s` script), `cipher /w`, `sdelete`, the
+PowerShell storage cmdlets (`clear-disk`, `remove-partition`,
+`reset-physicaldisk`, `format-volume`), `Clear-Content` to a raw device, and
+writes to a `\\.\PhysicalDrive` / `\\.\<drive>:` / `\\.\Volume{…}` device.
+New rule ids: `device.format-volume`, `device.diskpart`,
+`device.cipher-wipe`, `device.sdelete`, `device.ps-storage-cmdlet`,
+`device.raw-device-write` (plus the existing `redirect.block-device`
+extended to the `\\.\…` device namespace). There is no bash-suite corpus
+for these (they are not shell builtins), so the provenance is
+cc-safety-net's `device.ts` / `powershell` rule semantics plus the Windows
+admin command surface, turned into authored `tests/contract.rs` cases; each
+is `ManualOnly` (confirmable), matching the Linux `disk.erase` family. The
+PowerShell storage recognition is best-effort inspection of the `-Command`
+argument (the cmdlet runs inside the `powershell.exe` child); a
+dynamically-built cmdlet name is outside it, as for the other windows text
+rules.
+
 ## Deliberate differences from cc-safety-net
 
 safebash analyzes at execution time, after expansion, inside the shell;

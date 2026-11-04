@@ -25,6 +25,8 @@ const PS_PARANOID: &str = "PowerShell Remove-Item -Recurse -Force for non-tempor
 const PS_UNREAD: &str = "Recursive delete handed to powershell or pwsh in a form safebash does not read is blocked: pass the script as a single -Command with literal paths, after only -NoProfile, -NonInteractive, -NoLogo, or -ExecutionPolicy.";
 const GIT_METADATA: &str =
     "Git metadata and hooks are protected. Ask the user before modifying them.";
+const PS_STORAGE: &str = "PowerShell storage cmdlet (Clear-Disk / Remove-Partition / Reset-PhysicalDisk / Format-Volume) erases or repartitions a disk. Ask the user to run it manually after confirming the target.";
+const PS_CLEAR_DEVICE: &str = "Clear-Content on a raw disk or volume device writes directly to it, which can destroy it. Ask the user to run device writes manually after confirming the target.";
 
 fn dynamic_source(an: &Analyzer<'_>, cx: &Cx) {
     an.rule(
@@ -343,24 +345,44 @@ fn script_text(an: &Analyzer<'_>, cx: &Cx, script: &str, depth: usize) {
         dynamic_source(an, cx);
         return;
     }
+    // Destructive storage cmdlets are recognized by token presence, not by
+    // head position: splitting on every comment delimiter (`<#`, `#>`, `#`),
+    // quote and separator surfaces the `Verb-Noun` name as a whole token
+    // whatever comments, nesting or statement splits surround it, so no
+    // leading or nested comment can hide one. The cost is only a harmless
+    // confirmation when a comment merely mentions the name — never a bypass.
+    if mentions_storage_cmdlet(script) {
+        storage_cmdlet(an, cx);
+    }
     let mut piped = false;
     for raw in script.split(['\n']) {
         for (index, statement) in raw.split(['|']).enumerate() {
             for part in statement.split(';') {
                 let tokens = ps_tokens(part);
-                if tokens.is_empty() {
+                // A leading call operator (`&` or `.`) may be its own token;
+                // the real head is the next token, and the arguments follow
+                // it (a bare `&` left the old matcher with an empty head).
+                let head_idx = tokens
+                    .iter()
+                    .position(|t| t != "&" && t != ".")
+                    .unwrap_or(tokens.len());
+                let Some(raw_head) = tokens.get(head_idx) else {
                     continue;
-                }
-                let head = tokens[0]
-                    .trim_start_matches(['&', '.'])
-                    .to_ascii_lowercase();
-                if matches!(
+                };
+                let head = raw_head.trim_start_matches(['&', '.']).to_ascii_lowercase();
+                let args = &tokens[(head_idx + 1).min(tokens.len())..];
+                if head == "clear-content" {
+                    clear_content(an, cx, args);
+                } else if matches!(
                     head.as_str(),
                     "remove-item" | "ri" | "del" | "erase" | "rd" | "rm" | "rmdir"
                 ) {
-                    remove_item(an, cx, &tokens[1..], piped || index > 0);
+                    remove_item(an, cx, args, piped || index > 0);
                 } else {
-                    let words: Vec<Word> = tokens.iter().map(|t| Word::lit(t.clone())).collect();
+                    let words: Vec<Word> = tokens[head_idx..]
+                        .iter()
+                        .map(|t| Word::lit(t.clone()))
+                        .collect();
                     an.command(&words, cx, depth);
                 }
             }
@@ -368,6 +390,56 @@ fn script_text(an: &Analyzer<'_>, cx: &Cx, script: &str, depth: usize) {
         }
         piped = false;
     }
+}
+
+/// Best-effort recognition of a destructive storage cmdlet (Clear-Disk /
+/// Remove-Partition / Reset-PhysicalDisk / Format-Volume) in a readable
+/// PowerShell `-Command` script. Every comment delimiter (`<#`, `#>`, `#`),
+/// quote, module/path separator (`\`, `/`, `.`) and statement separator is a
+/// token boundary, and a backtick (PowerShell's escape) is removed from each
+/// token, so the `Verb-Noun` name surfaces whole however it is commented,
+/// nested, split, module-qualified (`Storage\Clear-Disk`) or backtick-escaped
+/// (``Clear-D`isk``). It over-matches a comment or string that merely
+/// contains the name, which costs a confirmation (ManualOnly), not a bypass.
+///
+/// This is best-effort, not a complete gate: the cmdlet actually runs inside
+/// `powershell.exe`, a child process the gate does not contain (design.md,
+/// "not a sandbox"; the same boundary as the Linux `cmd`/`powershell`
+/// rules). A name built at run time (`& ("Clear-" + "Disk")`), reached
+/// through an alias to a computed target, or otherwise produced dynamically
+/// is outside what static inspection of the argument can see — the
+/// obfuscation the threat model scopes to strict/paranoid, and the
+/// `-EncodedCommand` form is already denied as a dynamic source.
+fn mentions_storage_cmdlet(script: &str) -> bool {
+    script
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ';' | '|'
+                        | '<'
+                        | '>'
+                        | '#'
+                        | '\''
+                        | '"'
+                        | '&'
+                        | '('
+                        | ')'
+                        | ','
+                        | '{'
+                        | '}'
+                        | '\\'
+                        | '/'
+                        | '.'
+                )
+        })
+        .map(|t| t.replace('`', "").to_ascii_lowercase())
+        .any(|t| {
+            matches!(
+                t.as_str(),
+                "clear-disk" | "remove-partition" | "reset-physicaldisk" | "format-volume"
+            )
+        })
 }
 
 fn ps_tokens(text: &str) -> Vec<String> {
@@ -470,5 +542,65 @@ fn remove_item(an: &Analyzer<'_>, cx: &Cx, args: &[String], piped: bool) {
         if recurse && force {
             report_delete(an, cx, class, true);
         }
+    }
+}
+
+/// A destructive storage cmdlet (Clear-Disk / Remove-Partition /
+/// Reset-PhysicalDisk / Format-Volume) always needs a human: it erases or
+/// repartitions a disk. Like the Linux `disk.erase` family it is
+/// `ManualOnly` (confirmable at a terminal), with **no `-WhatIf`
+/// exemption**. A genuine `-WhatIf` preview is harmless to confirm; carving
+/// it out safely would mean out-parsing PowerShell's nested block comments,
+/// backtick escapes and token boundaries to avoid both a bypass (a
+/// `-WhatIf` hidden in a comment or a quoted value) and a false positive (a
+/// `#` inside an argument), which is out of scope. Fail toward asking.
+fn storage_cmdlet(an: &Analyzer<'_>, cx: &Cx) {
+    an.rule(
+        cx,
+        Finding::deny("device.ps-storage-cmdlet", Intent::ManualOnly, PS_STORAGE),
+    );
+}
+
+/// `Clear-Content` truncates a file; dangerous only when its target is a raw
+/// device. Extract the target (`-Path`/`-LiteralPath` or a positional) and
+/// block only a device path, so an ordinary file clear stays allowed.
+fn clear_content(an: &Analyzer<'_>, cx: &Cx, args: &[String]) {
+    let is_device = |t: &str| crate::rules::redirect::is_windows_block_device(t);
+    let mut i = 0;
+    let mut hit = false;
+    while i < args.len() {
+        let a = &args[i];
+        if a.starts_with('#') {
+            break;
+        }
+        let lower = a.to_ascii_lowercase();
+        if let Some(param) = lower.strip_prefix('-') {
+            let name = param.split(':').next().unwrap_or(param);
+            if !name.is_empty() && ("path".starts_with(name) || "literalpath".starts_with(name)) {
+                match a.split_once(':') {
+                    Some((_, value)) => hit |= is_device(value),
+                    None => {
+                        if let Some(value) = args.get(i + 1) {
+                            hit |= is_device(value);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+        hit |= is_device(a);
+        i += 1;
+    }
+    if hit {
+        an.rule(
+            cx,
+            Finding::deny(
+                "device.raw-device-write",
+                Intent::ManualOnly,
+                PS_CLEAR_DEVICE,
+            ),
+        );
     }
 }
