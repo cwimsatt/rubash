@@ -143,6 +143,33 @@ pub fn emulated_externals_allowed() -> bool {
     active().map_or(true, |gate| gate.allows_emulated_externals())
 }
 
+/// The executable a *respawn* must launch — a background job, coproc, trap
+/// action or process-substitution child that re-runs this shell on a piece
+/// of script. The commands in that script only reach a gate inside the
+/// child, so the child MUST be this same gated executable.
+///
+/// When a gate is installed this returns [`std::env::current_exe`] and
+/// nothing else. The engine's own selection chain prefers
+/// `CARGO_BIN_EXE_rubash` and a `deps/`-sibling `rubash`, and falls back to
+/// a bare `rubash` on `PATH`; any of those can be an *ungated* engine an
+/// attacker points the respawn at (for example by setting
+/// `CARGO_BIN_EXE_rubash` in the command's environment), which would run
+/// the respawned body with no safety checks at all. If we cannot even name
+/// our own image, we return a path that cannot execute, so the respawn
+/// fails closed instead of silently running ungated.
+///
+/// Without a gate (plain rubash, including its own test suite, where
+/// `CARGO_BIN_EXE_rubash` legitimately selects the freshly built test
+/// binary) this returns `unconstrained()` unchanged — the engine keeps its
+/// existing behavior.
+pub fn respawn_exe(unconstrained: impl FnOnce() -> PathBuf) -> PathBuf {
+    if active().is_none() {
+        return unconstrained();
+    }
+    std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("/nonexistent/safebash-respawn-fail-closed"))
+}
+
 /// Check a prepared child process against the gate.
 pub fn check_command_spawn(command: &Command) -> std::io::Result<()> {
     let Some(gate) = active() else {

@@ -11,12 +11,29 @@ use std::path::{Path, PathBuf};
 /// The workspace root: inherited from a parent safebash when it is an
 /// existing absolute directory containing our cwd, else the cwd.
 pub fn workspace() -> Option<PathBuf> {
-    let cwd = std::env::current_dir().ok();
-    if let Some(inherited) = std::env::var_os("SAFEBASH_WORKSPACE").map(PathBuf::from) {
-        let usable = inherited.is_absolute()
-            && inherited.is_dir()
-            && cwd.as_ref().is_some_and(|c| c.starts_with(&inherited));
-        if usable {
+    resolve_workspace(
+        std::env::var_os("SAFEBASH_WORKSPACE").map(PathBuf::from),
+        std::env::current_dir().ok(),
+        |p| p.is_dir(),
+    )
+}
+
+/// The workspace anchor. An inherited `SAFEBASH_WORKSPACE` (set by a parent
+/// safebash for its children) is the anchor whenever it is a usable
+/// absolute directory — **even when the current directory has moved outside
+/// it**. Falling through to the cwd there would widen protection: a parent
+/// could `cd` to a sibling tree and background a delete whose respawned
+/// child re-anchors to that wider cwd and allows what the parent, anchored
+/// to the session workspace, would block. "Inside the workspace" is judged
+/// against the session anchor, never a later `cd` (design.md). With no
+/// inherited anchor — the top-level invocation — the cwd is the anchor.
+fn resolve_workspace(
+    inherited: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    is_dir: impl Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(inherited) = inherited {
+        if inherited.is_absolute() && is_dir(&inherited) {
             return Some(inherited);
         }
     }
@@ -124,4 +141,50 @@ pub fn host_and_policy(workspace: Option<&Path>) -> (Host, Policy) {
     };
     let policy = Policy::load(&PolicySources::discover(workspace));
     (host, policy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_workspace;
+    use std::path::{Path, PathBuf};
+
+    const W: &str = "/work/proj";
+    const SIBLING: &str = "/other/tree";
+
+    fn anchor(inherited: Option<&str>, cwd: Option<&str>, exists: &[&str]) -> Option<String> {
+        resolve_workspace(
+            inherited.map(PathBuf::from),
+            cwd.map(PathBuf::from),
+            |p: &Path| exists.iter().any(|e| Path::new(e) == p),
+        )
+        .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn inherited_anchor_is_never_widened_by_cwd() {
+        // The bug: a parent cd'd to a sibling and backgrounds a delete; the
+        // child must keep the session anchor, not re-anchor to the sibling.
+        assert_eq!(anchor(Some(W), Some(SIBLING), &[W]), Some(W.into()));
+        // A cwd inside the anchor also keeps the anchor.
+        assert_eq!(
+            anchor(Some(W), Some("/work/proj/sub"), &[W]),
+            Some(W.into())
+        );
+    }
+
+    #[test]
+    fn top_level_uses_cwd() {
+        assert_eq!(anchor(None, Some(SIBLING), &[]), Some(SIBLING.into()));
+    }
+
+    #[test]
+    fn stale_or_relative_inherited_falls_back_to_cwd() {
+        // A workspace dir that no longer exists is unusable -> cwd.
+        assert_eq!(anchor(Some(W), Some(SIBLING), &[]), Some(SIBLING.into()));
+        // A relative SAFEBASH_WORKSPACE is never trusted as an anchor.
+        assert_eq!(
+            anchor(Some("rel/path"), Some(SIBLING), &["rel/path"]),
+            Some(SIBLING.into())
+        );
+    }
 }

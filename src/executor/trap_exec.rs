@@ -4200,10 +4200,14 @@ impl Executor {
         line: Option<usize>,
     ) -> Option<Rc<FileFd>> {
         use std::process::{Command, Stdio};
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: under a gate this respawn must be the gated shell
+        // (see crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
         let Ok((reader, writer)) = std::io::pipe() else {
             return None;
         };

@@ -167,6 +167,18 @@ never locks the agent out.
   the same workspace; those two variables are themselves protected
   (`guard.safebash-env`) from being set, exported or unset by a command.
 
+The workspace anchor **only ever narrows or holds, never widens.** An
+inherited `SAFEBASH_WORKSPACE` is the anchor whenever it is a usable
+absolute directory, even when the current directory has moved outside it —
+"inside the workspace" is judged against the session anchor, never a later
+`cd` (`setup::resolve_workspace`). This closes a respawn-widening bypass: a
+parent could otherwise `cd` to a sibling tree and background a delete whose
+respawned child re-anchored to the wider cwd and allowed what the parent
+would block. A respawned child (background job, coproc, trap,
+process-substitution body) also re-runs the gated executable itself, never
+an environment/`PATH`-selected engine, so the child re-installs the gate and
+re-judges every command in the respawned body (`exec_gate::respawn_exe`).
+
 Per-rule overrides are `off` / `confirm` / `deny`. Catastrophic rules, the
 self-protection guards and the `analysis.*` rules cannot be switched off.
 

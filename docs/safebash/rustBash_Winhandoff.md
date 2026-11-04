@@ -8,6 +8,33 @@ implementation.
 (commits `c12d80b` engine gate, `5801dcc` safebash layer). Work on that
 same branch unless told otherwise.
 
+> **Round 2 update (two cross-platform safety fixes already landed on this
+> branch — rebase before you start):**
+>
+> 1. **Ungated respawn exe-selection (FIXED).** Background jobs, coprocs,
+>    `trap` actions and process-substitution children respawn the shell on a
+>    script body; the exe-selection chain preferred `CARGO_BIN_EXE_rubash`
+>    (an ordinary, agent-settable env var) and a `deps/`-sibling / `PATH`
+>    `rubash` over the current executable, so a respawn could run the body
+>    in an **ungated** engine (e.g. `coproc { read t; rm -rf "$t"; }`). Fixed
+>    with one engine helper, `rubash::exec_gate::respawn_exe` (`src/exec_gate.rs`):
+>    when a gate is installed, a respawn is forced to `current_exe()` (the
+>    gated shell) or fails closed; the four chains at
+>    `src/executor/compound_exec.rs` (background + coproc),
+>    `src/executor/trap_exec.rs`, and `src/executor/external_setup.rs` now go
+>    through it. Proof: `crates/safebash/tests/respawn_gate.rs`.
+> 2. **Workspace-widening respawn (FIXED).** `setup::workspace()` fell
+>    through to the cwd when an inherited `SAFEBASH_WORKSPACE` didn't contain
+>    it, so a parent could `cd` to a sibling tree and background a delete
+>    whose child re-anchored to the wider cwd. Now an inherited, usable
+>    `SAFEBASH_WORKSPACE` is always the anchor (never widened); see
+>    `resolve_workspace` + its unit tests in `crates/safebash/src/setup.rs`
+>    and the rule in `design.md`.
+>
+> Both affected the **shipped Linux build**, not just Windows. T4 below is
+> narrowed accordingly — your remaining job there is to confirm the
+> exe-forcing invariant holds on the Windows spawn paths.
+
 Read these first, in order, then this file's task list:
 1. `docs/safebash/design.md` — the whole architecture (four-layer gate,
    policy model, confirmation, audit, the "Windows" section).
@@ -179,11 +206,27 @@ Read `docs/windows-path-contract.md` §5 and the `tests/path_contract_boundary_*
 suite before touching anything here; the guard must agree with that
 contract, not invent its own.
 
-### T4 — Spawn/exec completeness audit on Windows (DEFENSE IN DEPTH)
+### T4 — Spawn/exec completeness audit on Windows (REDUCED: the exe-identity hole is already fixed)
 
-The dispatch layer already judges every command, so this is belt-and-braces,
-but verify no external-process path escapes **both** the dispatch gate and
-the spawn backstop on Windows:
+The respawn exe-identity bypass (Round 2, #1 above) is fixed centrally in
+`rubash::exec_gate::respawn_exe`: **when a gate is active every respawn
+re-runs `current_exe()`**, so the respawned child is always the gated shell
+and re-judges its body at the dispatch layer. Your remaining Windows job is
+to confirm that invariant actually holds on Windows:
+
+- **`std::env::current_exe()` must resolve to the safebash `.exe` on
+  Windows** (it does by design, but verify — symlinks/`\\?\` prefixes).
+- **The oversized respawn uses `crate::fd::spawn_whitelisted`**
+  (`src/executor/compound_exec.rs`, Windows impl `CreateProcessW` in
+  `src/fd/windows_impl.rs`) with the `exe` now chosen by `respawn_exe` — so
+  the child is safebash and re-gates. Confirm the child re-installs the gate
+  on Windows (it runs `build_guard` + `exec_gate::install` in
+  `crates/safebash/src/main.rs` before `engine::main()`), inheriting
+  `SAFEBASH_FLOOR`/`SAFEBASH_WORKSPACE`. Port the Linux proof
+  (`crates/safebash/tests/respawn_gate.rs`) to run on the Windows CI job.
+- The dispatch layer already judges every command, so the rest is
+  belt-and-braces; still verify no external-process path escapes **both**
+  the dispatch gate and the spawn backstop on Windows:
 
 - **`exec_gate::exec` is `#[cfg(unix)]` only** (`src/exec_gate.rs:168`).
   On Windows there is no `CommandExt::exec`; rubash *simulates* `exec` via

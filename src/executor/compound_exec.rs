@@ -1369,11 +1369,16 @@ impl Executor {
                 Err(error) => return Err(error.into()),
             }
         }
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(test_rubash_binary_from_current_exe)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: under an installed gate a respawn must re-run the
+        // gated shell itself, never an env/PATH-selected engine that could
+        // run the respawned body ungated (crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(test_rubash_binary_from_current_exe)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
         // Environment block for the child: process env merged with the
         // shell's env_vars (same filter the old Command::env loop applied).
         // rubash#2259: the process-env base crosses through the same
@@ -4980,11 +4985,16 @@ impl Executor {
             }
         }
         use std::process::{Command, Stdio};
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(test_rubash_binary_from_current_exe)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: under an installed gate a respawn must re-run the
+        // gated shell itself, never an env/PATH-selected engine that could
+        // run the respawned body ungated (crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(test_rubash_binary_from_current_exe)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
 
         // rubash#1584: a simple-command coproc that the planner
         // admits spawns the program itself as the coproc process;
