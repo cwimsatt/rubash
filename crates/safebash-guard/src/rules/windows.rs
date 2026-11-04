@@ -432,10 +432,13 @@ fn remove_item(an: &Analyzer<'_>, cx: &Cx, args: &[String], piped: bool) {
         i += 1;
     }
     if targets.is_empty() {
-        if piped
-            && (recurse || an.policy.capabilities.fail_closed)
-            && an.policy.capabilities.fail_closed
-        {
+        // Pipeline input with no literal target (`… | Remove-Item`), with
+        // or without -Recurse, is unverifiable; the rule is strict+-gated,
+        // so `fail_closed` alone decides it (the earlier `(recurse ||
+        // fail_closed) && fail_closed` was a redundant bool expression that
+        // simplifies to this — flagged by clippy on newer toolchains).
+        let _ = recurse;
+        if piped && an.policy.capabilities.fail_closed {
             an.rule(
                 cx,
                 Finding::deny(

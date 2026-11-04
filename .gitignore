@@ -24,6 +24,8 @@ Thumbs.db
 *.tmp
 *.bak
 *.jsonl
+# safebash test fixtures are data the harvested/brush_compat tests load; keep them tracked.
+!crates/safebash/tests/data/*.jsonl
 
 *.out
 *.diff
