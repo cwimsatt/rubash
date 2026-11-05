@@ -1,0 +1,58 @@
+name: safebash
+
+# safebash's own CI: runs ONLY the safebash crates' tests, independent of the
+# inherited rubash engine workflows. On a fork those inherited workflows are
+# disabled; this is the active CI for the safebash safety layer + Windows port.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safebash-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: safebash tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build safebash and rubash (Linux)
+        run: cargo build -p rubash -p safebash
+      - name: safebash-guard unit tests (Linux)
+        run: cargo test -p safebash-guard --lib
+      - name: safebash crate tests (contract, respawn_gate, corpus) (Linux)
+        run: cargo test -p safebash --test contract --test respawn_gate --test brush_compat --test harvested
+      - name: Check safebash crates (Linux target)
+        run: cargo check --tests --target x86_64-unknown-linux-gnu -p safebash -p safebash-guard
+
+  windows:
+    name: safebash tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build safebash and rubash (Windows)
+        run: cargo build -p rubash -p safebash
+      - name: safebash-guard unit tests (Windows)
+        run: cargo test -p safebash-guard --lib
+      - name: safebash contract and respawn-gate tests (Windows)
+        run: cargo test -p safebash --test contract --test respawn_gate
+      - name: safebash corpus over-block guards (Windows)
+        run: cargo test -p safebash --test brush_compat --test harvested
+      - name: Check safebash crates (Windows MSVC target)
+        run: cargo check --tests --target x86_64-pc-windows-msvc -p safebash -p safebash-guard
