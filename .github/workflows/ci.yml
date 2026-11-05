@@ -1,5 +1,9 @@
 name: CI
 
+# Bootstrap: enabling Actions on a fork does not retroactively register a
+# workflow that already exists on the default branch; a commit touching the
+# workflow file does. This comment is that touch -- no behavior change.
+
 on:
   pull_request:
   push:
