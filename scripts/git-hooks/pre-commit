@@ -1,13 +1,19 @@
 #!/bin/sh
-# Enforce rustfmt on every commit (owner directive 2026-09-26: fmt must be a
-# commit hook). Fails the commit when any Rust source is not formatted.
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "pre-commit: cargo not found; skipping rustfmt check" >&2
+# Enforce rustfmt on the staged Rust files (owner directive 2026-09-26: fmt must
+# be a commit hook). Checks only the staged files, in small batches, NOT the
+# whole workspace: on Windows a workspace-wide `cargo fmt` overflows the command
+# line (os error 206, "filename or extension is too long") because the rubash
+# engine has too many files. All workspace crates are edition 2021.
+if ! command -v rustfmt >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt not found; skipping rustfmt check" >&2
     exit 0
 fi
-if ! cargo fmt --check >/dev/null 2>&1; then
-    echo "pre-commit: rustfmt check failed. Run 'cargo fmt' and re-stage." >&2
-    cargo fmt --check 2>&1 | head -20 >&2
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+[ -z "$files" ] && exit 0
+if ! printf '%s\n' "$files" | xargs -r -d '\n' -n 20 rustfmt --edition 2021 --check >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt check failed on staged files. Run 'cargo fmt' (or" >&2
+    echo "'rustfmt --edition 2021 <file>') and re-stage." >&2
+    printf '%s\n' "$files" | xargs -r -d '\n' -n 20 rustfmt --edition 2021 --check 2>&1 | head -20 >&2
     exit 1
 fi
 exit 0

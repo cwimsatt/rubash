@@ -1,0 +1,23 @@
+#!/bin/sh
+# Enforce clippy before every push (owner directive 2026-11-06): clippy is gated
+# locally since the pull-request CI runs only build + tests, not clippy. rustfmt
+# is already a pre-commit hook, so it is not repeated here (a workspace-wide
+# `cargo fmt` also overflows the command line on Windows, os error 206).
+#
+# clippy is scoped to the safebash crates with --no-deps: the inherited rubash
+# engine (forked from unixwin/rubash) carries ~800 pre-existing clippy warnings
+# and correctness-lint findings that a workspace-wide gate would block on. Gate
+# what we own; widen to --workspace once the engine is triaged. Uses the local
+# default cargo toolchain; keep it a current stable to match CI.
+# Do not bypass with --no-verify.
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-push: cargo not found; skipping clippy check" >&2
+    exit 0
+fi
+if ! cargo clippy -p safebash -p safebash-guard --no-deps --all-targets -- -D warnings >/dev/null 2>&1; then
+    echo "pre-push: clippy reported warnings in safebash/safebash-guard (treated" >&2
+    echo "as errors). Fix them, or narrow/allow per crate, then re-push." >&2
+    cargo clippy -p safebash -p safebash-guard --no-deps --all-targets -- -D warnings 2>&1 | tail -40 >&2
+    exit 1
+fi
+exit 0
