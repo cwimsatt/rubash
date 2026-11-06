@@ -19,7 +19,8 @@
 
 use safebash::brush_convert::BrushParser;
 use safebash::convert::RubashParser;
-use safebash_guard::model::{Arg, Script, ScriptParser};
+use safebash_guard::model::{Arg, Script, ScriptParser, Word};
+use safebash_guard::words;
 
 fn summarize(script: &Script) -> String {
     let mut out = String::new();
@@ -146,4 +147,59 @@ fn main() {
         "\n# summary: {} cases, {agree} agree, {diverge} diverge",
         lines.len()
     );
+
+    proc_sub_oracle_probe(&brush, &lines);
+}
+
+/// DESIGN Section 7: the one requirement the two-parser diff cannot settle on
+/// its own. A preserved process-substitution argument must evaluate to
+/// `Word::Dyn`, not `Word::Lit` (a `/dev/fd` path static analysis cannot know,
+/// DESIGN round-3 finding 1). A shared blind spot - both parsers wrong - shows
+/// as no divergence, so this is a DIRECT oracle probe: it evaluates each
+/// `<(...)` / `>(...)` argument BrushParser produced and reports how the guard
+/// classifies it. Today the observed result is `Word::Lit`, because A1 does
+/// not change the shared `words::evaluate`; the A2 change (bumping `Kind::Dyn`
+/// for `<(` / `>(`, or a dynamic representation) must fix it.
+fn proc_sub_oracle_probe(brush: &BrushParser, lines: &[String]) {
+    println!("\n# process-substitution dynamic-classification oracle probe (DESIGN Section 7)");
+    let lookup = |_: &str| -> Option<String> { None };
+    let mut total = 0usize;
+    let mut dynamic = 0usize;
+    for line in lines {
+        let script = brush.parse(line);
+        let mut texts: Vec<String> = Vec::new();
+        for site in &script.sites {
+            texts.extend(site.command.words.iter().map(|w| w.text().to_string()));
+            texts.extend(site.command.redirects.iter().map(|r| r.target.text().to_string()));
+        }
+        for text in texts {
+            if text.starts_with("<(") || text.starts_with(">(") {
+                total += 1;
+                let evaluated = words::evaluate(&text, &lookup);
+                let classification = match evaluated.words.first() {
+                    Some(Word::Dyn(_)) => {
+                        dynamic += 1;
+                        "Dyn"
+                    }
+                    Some(Word::Glob(_)) => "Glob",
+                    Some(Word::Lit(_)) => "Lit",
+                    None => "none",
+                };
+                println!("  {text:<40} -> Word::{classification}");
+            }
+        }
+    }
+    println!(
+        "# proc-sub args: {total}, dynamic (Word::Dyn): {dynamic}, non-dynamic: {}",
+        total - dynamic
+    );
+    if total > 0 && dynamic < total {
+        println!(
+            "# NOTE: {} of {total} process-substitution argument(s) classify as non-dynamic.\n\
+             # DESIGN round-3 finding 1: under A2 these must evaluate to Word::Dyn. A1 does not\n\
+             # change the shared words::evaluate, so rubash and brush share this blind spot today;\n\
+             # the A2 evaluator change is required to close it.",
+            total - dynamic
+        );
+    }
 }
