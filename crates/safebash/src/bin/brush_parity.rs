@@ -37,7 +37,9 @@ fn summarize(script: &Script) -> String {
             .redirects
             .iter()
             .map(|r| {
-                let fd = r.fd.map(|f| f.to_string()).unwrap_or_else(|| "-".to_string());
+                let fd =
+                    r.fd.map(|f| f.to_string())
+                        .unwrap_or_else(|| "-".to_string());
                 format!("{:?}:fd{fd}:{}", r.access, r.target.text())
             })
             .collect();
@@ -170,7 +172,12 @@ fn proc_sub_oracle_probe(brush: &BrushParser, lines: &[String]) {
         let mut texts: Vec<String> = Vec::new();
         for site in &script.sites {
             texts.extend(site.command.words.iter().map(|w| w.text().to_string()));
-            texts.extend(site.command.redirects.iter().map(|r| r.target.text().to_string()));
+            texts.extend(
+                site.command
+                    .redirects
+                    .iter()
+                    .map(|r| r.target.text().to_string()),
+            );
         }
         for text in texts {
             if text.starts_with("<(") || text.starts_with(">(") {

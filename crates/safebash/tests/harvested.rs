@@ -113,7 +113,7 @@ fn harvested_corpus_agreement() {
             rule_agree as f64 * 100.0 / both_block.max(1) as f64,
         ));
         let mut worst: Vec<_> = confusion.into_iter().collect();
-        worst.sort_by(|a, b| b.1.cmp(&a.1));
+        worst.sort_by_key(|x| std::cmp::Reverse(x.1));
         for ((theirs, ours), count) in worst.iter().take(12) {
             report.push_str(&format!(
                 "    {count:4}  ccsn={theirs:42} safebash={ours:38} e.g. {}\n",

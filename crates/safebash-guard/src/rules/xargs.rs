@@ -224,7 +224,7 @@ fn child_verdict(
             .iter()
             .skip(1)
             .find(|w| !w.text().starts_with('-'))
-            .is_some_and(&uses_token);
+            .is_some_and(uses_token);
         if program_from_token {
             return Some(tool.shell());
         }
