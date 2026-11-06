@@ -148,8 +148,21 @@ mod tests {
     use super::resolve_workspace;
     use std::path::{Path, PathBuf};
 
+    // Absolute paths, per platform: a Unix-absolute path like "/work/proj" is
+    // RELATIVE on Windows, so resolve_workspace rightly refuses it as an anchor
+    // and the "keep the anchor" assertions would not hold there.
+    #[cfg(not(windows))]
     const W: &str = "/work/proj";
+    #[cfg(not(windows))]
     const SIBLING: &str = "/other/tree";
+    #[cfg(not(windows))]
+    const W_SUB: &str = "/work/proj/sub";
+    #[cfg(windows)]
+    const W: &str = r"C:\work\proj";
+    #[cfg(windows)]
+    const SIBLING: &str = r"C:\other\tree";
+    #[cfg(windows)]
+    const W_SUB: &str = r"C:\work\proj\sub";
 
     fn anchor(inherited: Option<&str>, cwd: Option<&str>, exists: &[&str]) -> Option<String> {
         resolve_workspace(
@@ -166,10 +179,7 @@ mod tests {
         // child must keep the session anchor, not re-anchor to the sibling.
         assert_eq!(anchor(Some(W), Some(SIBLING), &[W]), Some(W.into()));
         // A cwd inside the anchor also keeps the anchor.
-        assert_eq!(
-            anchor(Some(W), Some("/work/proj/sub"), &[W]),
-            Some(W.into())
-        );
+        assert_eq!(anchor(Some(W), Some(W_SUB), &[W]), Some(W.into()));
     }
 
     #[test]
