@@ -122,6 +122,26 @@ impl Walker<'_> {
     ) {
         match command {
             ast::Command::Simple(simple) => {
+                if has_fd_var_allocation(simple) {
+                    // Class II (DESIGN round-3 finding 2): a `{name}` word
+                    // adjoining a redirection operator is a variable-named
+                    // file-descriptor allocation, which rubash claims for the
+                    // redirect (not an argument). brush 0.4.0 exposes NO source
+                    // location for a redirection operator (`IoRedirect` has
+                    // `location() == None`), so the no-space adjacency rubash
+                    // requires - the only thing distinguishing `{fd}>file`
+                    // (allocation) from `{fd} >file` (a `{fd}` argument) -
+                    // cannot be reliably reconstructed from the AST. Rather
+                    // than guess (a wrong guess in the command-word position
+                    // would hide the real command), we DENY it as unsupported.
+                    // Fail-closed, per the contract's explicit fallback.
+                    if self.script.parse_error.is_none() {
+                        self.script.parse_error = Some(
+                            "unsupported: variable-named file-descriptor allocation ({name}> ...) cannot be reliably reconstructed from the brush AST".to_string(),
+                        );
+                    }
+                    return;
+                }
                 let (assignments, words, redirects, stdin_text) = self.simple_parts(simple);
                 let command = SimpleCommand {
                     assignments,
@@ -324,30 +344,12 @@ impl Walker<'_> {
 
         // Suffix: ordinary arguments, suffix assignment-shaped arguments (kept
         // as arguments, DESIGN round-2 finding 1), redirects and process
-        // substitutions. Class II (DESIGN round-3 finding 2): a `{name}` word
-        // immediately followed by a redirection operator is the redirect's
-        // descriptor variable, claimed by the redirect and NOT an argument
-        // (rubash `token_actions.rs` / `redirections.rs`). We detect it and
-        // omit the word, matching rubash; a brush AST that did not let us do
-        // this reliably would instead be denied as unsupported.
+        // substitutions. A variable-named descriptor allocation (`{name}>...`,
+        // DESIGN round-3 finding 2 / class II) is denied earlier in
+        // `command()` (see `has_fd_var_allocation`), so no `{name}` fd-var
+        // reaches here as an argument.
         if let Some(suffix) = &simple.suffix {
-            let items = &suffix.0;
-            let skip: Vec<bool> = (0..items.len())
-                .map(|i| match &items[i] {
-                    ast::CommandPrefixOrSuffixItem::Word(word) => {
-                        is_fd_var(&word.value)
-                            && matches!(
-                                items.get(i + 1),
-                                Some(ast::CommandPrefixOrSuffixItem::IoRedirect(_))
-                            )
-                    }
-                    _ => false,
-                })
-                .collect();
-            for (i, item) in items.iter().enumerate() {
-                if skip[i] {
-                    continue;
-                }
+            for item in &suffix.0 {
                 match item {
                     ast::CommandPrefixOrSuffixItem::Word(word) => {
                         words.push(Arg::raw(word.value.clone()));
@@ -493,7 +495,13 @@ impl Walker<'_> {
 /// A prefix assignment as `(name, raw value)`, matching rubash's
 /// `(name, Arg::raw(raw))`.
 fn assignment_pair(assignment: &ast::Assignment) -> (String, Arg) {
-    let name = assignment.name.to_string();
+    // An append assignment (`A+=x`) keeps its `+` on the name, so the guard
+    // sees `A+=x` as rubash does, not `A=x`.
+    let name = if assignment.append {
+        format!("{}+", assignment.name)
+    } else {
+        assignment.name.to_string()
+    };
     let value = match &assignment.value {
         ast::AssignmentValue::Scalar(word) => word.value.clone(),
         ast::AssignmentValue::Array(elements) => {
@@ -525,6 +533,47 @@ fn is_fd_var(word: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// True when the command carries the shape of a variable-named descriptor
+/// allocation: a `{name}`-shaped word immediately followed, in source order,
+/// by an I/O redirection (DESIGN round-3 finding 2, class II). Because brush
+/// 0.4.0 gives redirection operators no source location, this positional shape
+/// is all the AST offers and cannot confirm the no-space adjacency that tells
+/// `{fd}>file` (allocation) apart from `{fd} >file` (a `{fd}` argument); the
+/// caller therefore denies it rather than guess.
+fn has_fd_var_allocation(simple: &ast::SimpleCommand) -> bool {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Slot {
+        FdVarWord,
+        Redirect,
+        Other,
+    }
+    fn classify(item: &ast::CommandPrefixOrSuffixItem) -> Slot {
+        match item {
+            ast::CommandPrefixOrSuffixItem::Word(w) if is_fd_var(&w.value) => Slot::FdVarWord,
+            ast::CommandPrefixOrSuffixItem::IoRedirect(_) => Slot::Redirect,
+            _ => Slot::Other,
+        }
+    }
+    // Tokens in source order: prefix items, the command word, then suffix items.
+    let mut slots: Vec<Slot> = Vec::new();
+    if let Some(prefix) = &simple.prefix {
+        slots.extend(prefix.0.iter().map(classify));
+    }
+    if let Some(word) = &simple.word_or_name {
+        slots.push(if is_fd_var(&word.value) {
+            Slot::FdVarWord
+        } else {
+            Slot::Other
+        });
+    }
+    if let Some(suffix) = &simple.suffix {
+        slots.extend(suffix.0.iter().map(classify));
+    }
+    slots
+        .windows(2)
+        .any(|pair| pair[0] == Slot::FdVarWord && pair[1] == Slot::Redirect)
 }
 
 /// An arithmetic expression as a quoted word (so `words_only` treats it as a
@@ -616,15 +665,23 @@ mod tests {
     }
 
     #[test]
-    fn variable_named_fd_allocation_is_not_an_argument() {
-        // DESIGN round-3 finding 2 (class II): `{log}` adjoining `>` is the
-        // redirect's descriptor variable, not an argument, so `-c` is still
-        // recognized and the command string is analyzable.
-        let script = parse("bash {log}>trace.log -c 'rm -rf /'");
-        let site = &script.sites[0];
-        assert_eq!(words(site), vec!["bash", "-c", "'rm -rf /'"]);
-        assert!(site.command.words.iter().all(|w| w.text() != "{log}"));
-        assert!(!site.command.redirects.is_empty());
+    fn variable_named_fd_allocation_is_denied() {
+        // DESIGN round-3 finding 2 (class II): a `{name}` word adjoining a
+        // redirection operator is a variable-named descriptor allocation.
+        // brush 0.4.0 gives redirection operators no source location, so the
+        // no-space adjacency cannot be confirmed from the AST; rather than
+        // guess (a wrong guess in the command-word position would hide the
+        // real command) we deny it as unsupported, fail-closed. This covers
+        // the suffix position (`bash {log}>...`) and the command-word position
+        // (`{fd}>... cmd`).
+        assert!(parse("bash {log}>trace.log -c 'rm -rf /'")
+            .parse_error
+            .is_some());
+        assert!(parse("{fd}>out.txt echo hi").parse_error.is_some());
+        // A plain `{x}` not adjoining a redirect is an ordinary argument.
+        let ok = parse("echo {x}");
+        assert!(ok.parse_error.is_none());
+        assert_eq!(words(&ok.sites[0]), vec!["echo", "{x}"]);
     }
 
     #[test]
