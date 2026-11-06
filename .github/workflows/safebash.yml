@@ -32,6 +32,8 @@ jobs:
         run: cargo build -p rubash -p safebash
       - name: safebash-guard unit tests (Linux)
         run: cargo test -p safebash-guard --lib
+      - name: safebash crate unit tests (Linux)
+        run: cargo test -p safebash --lib
       - name: safebash crate tests (contract, respawn_gate, corpus) (Linux)
         run: cargo test -p safebash --test contract --test respawn_gate --test brush_compat --test harvested
       - name: Check safebash crates (Linux target)
@@ -50,6 +52,8 @@ jobs:
         run: cargo build -p rubash -p safebash
       - name: safebash-guard unit tests (Windows)
         run: cargo test -p safebash-guard --lib
+      - name: safebash crate unit tests (Windows)
+        run: cargo test -p safebash --lib
       - name: safebash contract and respawn-gate tests (Windows)
         run: cargo test -p safebash --test contract --test respawn_gate
       - name: safebash corpus over-block guards (Windows)
