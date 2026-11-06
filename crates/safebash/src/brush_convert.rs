@@ -13,10 +13,15 @@
 //! but mis-structures -> detected here or denied).
 
 use brush_parser::ast;
+use brush_parser::ast::SourceLocation;
 use brush_parser::{Parser, ParserOptions};
 use safebash_guard::model::{
     Access, Arg, CommandSite, Origin, PipelineInfo, Redirect, Script, ScriptParser, SimpleCommand,
 };
+
+/// The parts of a simple command in position order: environment assignments
+/// `(name, value)`, words, redirects, and here-document / here-string stdin text.
+type SimpleCommandParts = (Vec<(String, Arg)>, Vec<Arg>, Vec<Redirect>, Option<String>);
 
 /// The brush-parser as a [`ScriptParser`], for offline parity only.
 pub struct BrushParser {
@@ -122,22 +127,21 @@ impl Walker<'_> {
     ) {
         match command {
             ast::Command::Simple(simple) => {
-                if has_fd_var_allocation(simple) {
-                    // Class II (DESIGN round-3 finding 2): a `{name}` word
-                    // adjoining a redirection operator is a variable-named
-                    // file-descriptor allocation, which rubash claims for the
-                    // redirect (not an argument). brush 0.4.0 exposes NO source
-                    // location for a redirection operator (`IoRedirect` has
-                    // `location() == None`), so the no-space adjacency rubash
-                    // requires - the only thing distinguishing `{fd}>file`
-                    // (allocation) from `{fd} >file` (a `{fd}` argument) -
-                    // cannot be reliably reconstructed from the AST. Rather
-                    // than guess (a wrong guess in the command-word position
-                    // would hide the real command), we DENY it as unsupported.
-                    // Fail-closed, per the contract's explicit fallback.
+                if denied_fd_var_allocation(simple) {
+                    // A variable-named file-descriptor allocation (`{name}>...`,
+                    // no space) that this converter does not reconstruct:
+                    // either `{name}` is the command word (dropping it would
+                    // promote a following word to the command and hide it,
+                    // DESIGN rev 2 Section 4.1 case 3), or the redirect is a
+                    // here-document, here-string, or combined-output (`&>`)
+                    // form whose allocation semantics are not mapped (case 4).
+                    // Fail-closed: deny. The common suffix-position allocation
+                    // onto an ordinary file redirect IS reconstructed, in
+                    // `simple_parts` (case 2), using the operator span the fork
+                    // now records on `IoRedirect`.
                     if self.script.parse_error.is_none() {
                         self.script.parse_error = Some(
-                            "unsupported: variable-named file-descriptor allocation ({name}> ...) cannot be reliably reconstructed from the brush AST".to_string(),
+                            "unsupported: variable-named file-descriptor allocation ({name}> ...) in the command-word position, or onto a here-document / here-string / combined-output redirect".to_string(),
                         );
                     }
                     return;
@@ -169,17 +173,11 @@ impl Walker<'_> {
             ast::Command::Function(definition) => {
                 // Walk the body tagged with the function name; analyzed only
                 // where the function is called.
-                self.function_body(&definition.body, scope, Some(definition.fname.value.as_str()));
-            }
-            ast::Command::ExtendedTest(test, redirects) => {
-                // `[[ ... ]]`: the conditional-args site. (In crates.io 0.4.0
-                // this is a top-level `Command` variant; in the inspected
-                // commit b4fb2db it was `CompoundCommand::ExtendedTest` - a
-                // published-vs-inspected difference, see DESIGN Section 6.)
-                let mut words = Vec::new();
-                collect_test_words(&test.expr, &mut words);
-                self.words_only(words.into_iter(), scope, function);
-                self.push_redirect_site(redirects.as_ref(), scope, function);
+                self.function_body(
+                    &definition.body,
+                    scope,
+                    Some(definition.fname.value.as_str()),
+                );
             }
         }
     }
@@ -269,11 +267,24 @@ impl Walker<'_> {
             }
             Compound::Arithmetic(command) => {
                 // `(( a[$(cmd)] ))` runs its substitutions.
-                self.words_only(std::iter::once(quoted_arith(&command.expr)), scope, function);
+                self.words_only(
+                    std::iter::once(quoted_arith(&command.expr)),
+                    scope,
+                    function,
+                );
             }
             Compound::Coprocess(coproc) => {
                 let inner = self.new_scope(scope);
                 self.command(&coproc.body, inner, function, None);
+            }
+            Compound::ExtendedTest(test) => {
+                // `[[ ... ]]`: the conditional-args site. On this fork (upstream
+                // main) `ExtendedTest` is a `CompoundCommand` variant; any
+                // redirects are the enclosing `Command::Compound` redirects,
+                // handled by the trailing `push_redirect_site` below.
+                let mut words = Vec::new();
+                collect_test_words(&test.expr, &mut words);
+                self.words_only(words.into_iter(), scope, function);
             }
         }
         self.push_redirect_site(redirects, scope, function);
@@ -308,10 +319,7 @@ impl Walker<'_> {
 
     /// The parts of a simple command, mapped by position (DESIGN Section 5
     /// "Walker mapping" and "Special sites").
-    fn simple_parts(
-        &self,
-        simple: &ast::SimpleCommand,
-    ) -> (Vec<(String, Arg)>, Vec<Arg>, Vec<Redirect>, Option<String>) {
+    fn simple_parts(&self, simple: &ast::SimpleCommand) -> SimpleCommandParts {
         let mut assignments = Vec::new();
         let mut words = Vec::new();
         let mut redirects = Vec::new();
@@ -349,9 +357,21 @@ impl Walker<'_> {
         // `command()` (see `has_fd_var_allocation`), so no `{name}` fd-var
         // reaches here as an argument.
         if let Some(suffix) = &simple.suffix {
-            for item in &suffix.0 {
+            let items = &suffix.0;
+            for (index, item) in items.iter().enumerate() {
                 match item {
                     ast::CommandPrefixOrSuffixItem::Word(word) => {
+                        // A `{name}` descriptor allocation contiguous with the
+                        // next ordinary file redirect is claimed by that
+                        // redirect, not an argument - drop it (DESIGN rev 2
+                        // Section 4.1 case 2). The command-word-position and the
+                        // here-document / here-string / `&>` allocation shapes
+                        // are denied earlier in `command()`.
+                        if is_fd_var(&word.value)
+                            && next_is_contiguous_file_redirect(word, items.get(index + 1))
+                        {
+                            continue;
+                        }
                         words.push(Arg::raw(word.value.clone()));
                     }
                     ast::CommandPrefixOrSuffixItem::AssignmentWord(_assignment, word) => {
@@ -424,7 +444,7 @@ impl Walker<'_> {
         stdin_text: &mut Option<String>,
     ) {
         match io {
-            ast::IoRedirect::File(fd, kind, target) => {
+            ast::IoRedirect::File(fd, kind, target, ..) => {
                 let fd = fd.and_then(|n| u32::try_from(n).ok());
                 let access = match kind {
                     ast::IoFileRedirectKind::Read => Access::Read,
@@ -440,19 +460,23 @@ impl Walker<'_> {
                     redirects.push(Redirect { fd, access, target });
                 }
             }
-            ast::IoRedirect::OutputAndError(word, append) => {
+            ast::IoRedirect::OutputAndError(word, append, ..) => {
                 redirects.push(Redirect {
                     fd: None,
-                    access: if *append { Access::Append } else { Access::Write },
+                    access: if *append {
+                        Access::Append
+                    } else {
+                        Access::Write
+                    },
                     target: Arg::raw(word.value.clone()),
                 });
             }
-            ast::IoRedirect::HereDocument(fd, here_doc) => {
+            ast::IoRedirect::HereDocument(fd, here_doc, ..) => {
                 if fd.unwrap_or(0) == 0 && stdin_text.is_none() {
                     *stdin_text = Some(here_doc.doc.value.clone());
                 }
             }
-            ast::IoRedirect::HereString(fd, word) => {
+            ast::IoRedirect::HereString(fd, word, ..) => {
                 if fd.unwrap_or(0) == 0 && stdin_text.is_none() {
                     *stdin_text = Some(word.value.clone());
                 }
@@ -535,45 +559,78 @@ fn is_fd_var(word: &str) -> bool {
     }
 }
 
-/// True when the command carries the shape of a variable-named descriptor
-/// allocation: a `{name}`-shaped word immediately followed, in source order,
-/// by an I/O redirection (DESIGN round-3 finding 2, class II). Because brush
-/// 0.4.0 gives redirection operators no source location, this positional shape
-/// is all the AST offers and cannot confirm the no-space adjacency that tells
-/// `{fd}>file` (allocation) apart from `{fd} >file` (a `{fd}` argument); the
-/// caller therefore denies it rather than guess.
-fn has_fd_var_allocation(simple: &ast::SimpleCommand) -> bool {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Slot {
-        FdVarWord,
-        Redirect,
-        Other,
-    }
-    fn classify(item: &ast::CommandPrefixOrSuffixItem) -> Slot {
-        match item {
-            ast::CommandPrefixOrSuffixItem::Word(w) if is_fd_var(&w.value) => Slot::FdVarWord,
-            ast::CommandPrefixOrSuffixItem::IoRedirect(_) => Slot::Redirect,
-            _ => Slot::Other,
+/// True when a simple command carries a variable-named file-descriptor
+/// allocation (`{name}>...`, no space) that this converter does NOT reconstruct
+/// and therefore denies (fail-closed), per DESIGN rev 2 Section 4.1:
+///   - case 3: `{name}` is the command word and the first suffix item is a
+///     redirect contiguous with it (dropping `{name}` would promote a following
+///     word to the command and hide it); or
+///   - case 4: a suffix `{name}` is contiguous with a here-document, here-string
+///     or combined-output (`&>`) redirect, whose allocation is not mapped.
+///
+/// The common, safe case - a suffix `{name}` contiguous with an ordinary file
+/// redirect - is reconstructed in `simple_parts` (case 2), not denied here. A
+/// `{name}` not contiguous with any redirect is an ordinary argument (case 1).
+fn denied_fd_var_allocation(simple: &ast::SimpleCommand) -> bool {
+    // Case 3: `{name}` in the command-word position, contiguous with the first
+    // suffix redirect.
+    if let Some(word) = &simple.word_or_name {
+        if is_fd_var(&word.value) {
+            if let Some(ast::CommandPrefixOrSuffixItem::IoRedirect(redirect)) =
+                simple.suffix.as_ref().and_then(|s| s.0.first())
+            {
+                if is_contiguous(word, redirect) {
+                    return true;
+                }
+            }
         }
     }
-    // Tokens in source order: prefix items, the command word, then suffix items.
-    let mut slots: Vec<Slot> = Vec::new();
-    if let Some(prefix) = &simple.prefix {
-        slots.extend(prefix.0.iter().map(classify));
-    }
-    if let Some(word) = &simple.word_or_name {
-        slots.push(if is_fd_var(&word.value) {
-            Slot::FdVarWord
-        } else {
-            Slot::Other
-        });
-    }
+    // Case 4: a suffix `{name}` contiguous with an ineligible redirect (here
+    // document, here string, or combined output). A contiguous ordinary file
+    // redirect is the reconstructed case (case 2) and is not denied.
     if let Some(suffix) = &simple.suffix {
-        slots.extend(suffix.0.iter().map(classify));
+        let items = &suffix.0;
+        for (index, item) in items.iter().enumerate() {
+            if let ast::CommandPrefixOrSuffixItem::Word(word) = item {
+                if is_fd_var(&word.value) {
+                    if let Some(ast::CommandPrefixOrSuffixItem::IoRedirect(redirect)) =
+                        items.get(index + 1)
+                    {
+                        if is_contiguous(word, redirect)
+                            && !matches!(redirect, ast::IoRedirect::File(..))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
     }
-    slots
-        .windows(2)
-        .any(|pair| pair[0] == Slot::FdVarWord && pair[1] == Slot::Redirect)
+    false
+}
+
+/// A suffix `{name}` word whose next item is an ordinary file redirect contiguous
+/// with it - the reconstructed descriptor allocation (DESIGN rev 2 Section 4.1
+/// case 2), which `simple_parts` drops from the argument list.
+fn next_is_contiguous_file_redirect(
+    word: &ast::Word,
+    next: Option<&ast::CommandPrefixOrSuffixItem>,
+) -> bool {
+    let Some(ast::CommandPrefixOrSuffixItem::IoRedirect(redirect)) = next else {
+        return false;
+    };
+    matches!(redirect, ast::IoRedirect::File(..)) && is_contiguous(word, redirect)
+}
+
+/// True when `word` ends exactly where `redirect`'s operator begins (no space) -
+/// the physical adjacency that marks a `{name}>file` descriptor allocation. Uses
+/// the operator span the fork records on `IoRedirect`; with either span absent
+/// (which should not happen on the fork), it is not treated as contiguous.
+fn is_contiguous(word: &ast::Word, redirect: &ast::IoRedirect) -> bool {
+    match (word.loc.as_ref(), redirect.location()) {
+        (Some(word_span), Some(operator_span)) => word_span.end.index == operator_span.start.index,
+        _ => false,
+    }
 }
 
 /// An arithmetic expression as a quoted word (so `words_only` treats it as a
@@ -600,7 +657,11 @@ fn collect_test_words(expr: &ast::ExtendedTestExpr, out: &mut Vec<String>) {
 }
 
 fn slice_chars(source: &str, start: usize, end: usize) -> String {
-    source.chars().skip(start).take(end.saturating_sub(start)).collect()
+    source
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
 }
 
 #[cfg(test)]
@@ -665,20 +726,47 @@ mod tests {
     }
 
     #[test]
-    fn variable_named_fd_allocation_is_denied() {
-        // DESIGN round-3 finding 2 (class II): a `{name}` word adjoining a
-        // redirection operator is a variable-named descriptor allocation.
-        // brush 0.4.0 gives redirection operators no source location, so the
-        // no-space adjacency cannot be confirmed from the AST; rather than
-        // guess (a wrong guess in the command-word position would hide the
-        // real command) we deny it as unsupported, fail-closed. This covers
-        // the suffix position (`bash {log}>...`) and the command-word position
-        // (`{fd}>... cmd`).
-        assert!(parse("bash {log}>trace.log -c 'rm -rf /'")
-            .parse_error
-            .is_some());
+    fn fd_var_allocation_in_command_word_position_is_denied() {
+        // DESIGN rev 2 Section 4.1 case 3: `{fd}` is the command word and the
+        // redirect is contiguous with it. Dropping `{fd}` would promote `echo`
+        // to the command word and hide it, so deny (fail-closed).
         assert!(parse("{fd}>out.txt echo hi").parse_error.is_some());
-        // A plain `{x}` not adjoining a redirect is an ordinary argument.
+    }
+
+    #[test]
+    fn fd_var_allocation_onto_heredoc_or_combined_output_is_denied() {
+        // DESIGN rev 2 Section 4.1 case 4: a suffix `{fd}` contiguous with a
+        // here-string or combined-output redirect, whose allocation is not
+        // mapped, is denied.
+        assert!(parse("exec {fd}<<< hi").parse_error.is_some());
+        assert!(parse("printf x {fd}&>out.txt").parse_error.is_some());
+    }
+
+    #[test]
+    fn fd_var_allocation_onto_file_redirect_is_reconstructed() {
+        // DESIGN rev 2 Section 4.1 case 2: a suffix `{name}` contiguous with an
+        // ordinary file redirect is a descriptor allocation - claimed by the
+        // redirect, dropped from the arguments - so the real command reaches the
+        // guard intact. The operator span the fork records makes this safe.
+        let allocated = parse("bash {log}>trace.log -c 'rm -rf /'");
+        assert!(allocated.parse_error.is_none());
+        assert_eq!(words(&allocated.sites[0]), vec!["bash", "-c", "'rm -rf /'"]);
+        assert_eq!(allocated.sites[0].command.redirects.len(), 1);
+
+        let exec = parse("exec {fd}>out.txt");
+        assert!(exec.parse_error.is_none());
+        assert_eq!(words(&exec.sites[0]), vec!["exec"]);
+    }
+
+    #[test]
+    fn spaced_fd_var_is_an_ordinary_argument() {
+        // DESIGN rev 2 Section 4.1 case 1: with a space, `{fd}` is a normal
+        // argument and the redirect is separate - no longer over-denied.
+        let spaced = parse("exec {fd} >out.txt");
+        assert!(spaced.parse_error.is_none());
+        assert_eq!(words(&spaced.sites[0]), vec!["exec", "{fd}"]);
+
+        // A `{x}` not adjoining any redirect is an ordinary argument too.
         let ok = parse("echo {x}");
         assert!(ok.parse_error.is_none());
         assert_eq!(words(&ok.sites[0]), vec!["echo", "{x}"]);
@@ -698,6 +786,10 @@ mod tests {
         let cat = &script.sites[0].command;
         assert_eq!(cat.redirects.len(), 2);
         let bash = &script.sites[1].command;
-        assert!(bash.stdin_text.as_deref().unwrap_or("").contains("rm -rf ~"));
+        assert!(bash
+            .stdin_text
+            .as_deref()
+            .unwrap_or("")
+            .contains("rm -rf ~"));
     }
 }

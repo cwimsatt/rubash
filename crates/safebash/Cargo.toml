@@ -17,12 +17,12 @@ path = "src/main.rs"
 rubash = { path = "../.." }
 safebash-guard = { path = "../safebash-guard" }
 serde_json = "1"
-# safebash keystone A1 (offline parity path only; the live guard keeps
-# RubashParser - see src/brush_convert.rs and src/bin/brush_parity.rs).
-# Exact pin per DESIGN.md Section 6; the Peg path is the default (the
-# winnow-parser feature is left off). Confirm the published 0.4.0 contents
-# against inspected commit b4fb2dbab3ff499d1bf149c0b03a60e9fe500a2a.
-brush-parser = "=0.4.0"
+# safebash keystone: pinned to the owner's brush fork, which adds the source
+# span of the I/O redirect operator to IoRedirect (brush fork DESIGN rev 2), so
+# the converter reconstructs `{fd}>file` adjacency instead of denying it. The
+# Peg path is the default (the winnow-parser feature is left off). Exact commit
+# pin for reproducibility; update it when the fork advances.
+brush-parser = { git = "https://github.com/cwimsatt/brush.git", rev = "2ce8c10dc4de97462ce7f5f01d4606fb14feef27" }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
