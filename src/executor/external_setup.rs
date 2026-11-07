@@ -3343,11 +3343,16 @@ impl Executor {
         line: Option<usize>,
         spawn_plan: &ProcsubSpawnPlan,
     ) -> Result<(), ExecuteError> {
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(test_rubash_binary_from_current_exe)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: a process-substitution child re-runs the shell on a
+        // script body; under a gate it must be the gated shell (see
+        // crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(test_rubash_binary_from_current_exe)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
         // The forked child keeps the parent's functions
         // (background_function_prelude serializes them ahead of the body),
         // so `>(myfunc)` resolves the same definition GNU's fork would see.
@@ -3631,7 +3636,7 @@ impl Executor {
             .stderr(self.procsub_plan_stdio(spawn_plan.get(2)));
         process.current_dir(&self.shell_state.cwd);
         suppress_orphan_console(&mut process);
-        let spawn_result = process.spawn();
+        let spawn_result = crate::exec_gate::spawn(&mut process);
         for dup in parent_side_dups {
             crate::fd::close_handle(dup);
         }

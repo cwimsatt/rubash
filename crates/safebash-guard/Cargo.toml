@@ -1,0 +1,31 @@
+[package]
+name = "safebash-guard"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Command-safety policy engine for safebash: decides whether a shell command an LLM agent issued may run"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+regex = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The Windows console confirmation prompt (platform.rs). Pinned to the
+# engine's windows-sys major (root Cargo.toml: 0.61.2) so the workspace
+# resolves one copy; the features union with the engine's.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+tempfile = "3"

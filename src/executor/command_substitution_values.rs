@@ -963,7 +963,7 @@ impl Executor {
         crate::executor::dev_fd_operands::attach_unix_dev_fd_operands(&mut process, &dev_ops);
         process.current_dir(&self.shell_state.cwd);
         suppress_orphan_console(&mut process);
-        let mut spawned = match process.spawn() {
+        let mut spawned = match crate::exec_gate::spawn(&mut process) {
             Ok(child) => child,
             Err(_) => {
                 // rubash#2602: the spawn produced no child — disarm

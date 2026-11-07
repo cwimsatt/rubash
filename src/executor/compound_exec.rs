@@ -1331,7 +1331,7 @@ impl Executor {
             }
             process.current_dir(&self.shell_state.cwd);
             suppress_orphan_console(&mut process);
-            match process.spawn() {
+            match crate::exec_gate::spawn(&mut process) {
                 Ok(child) => {
                     let pid = child.id();
                     adopt_orphan_console(pid);
@@ -1369,11 +1369,16 @@ impl Executor {
                 Err(error) => return Err(error.into()),
             }
         }
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(test_rubash_binary_from_current_exe)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: under an installed gate a respawn must re-run the
+        // gated shell itself, never an env/PATH-selected engine that could
+        // run the respawned body ungated (crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(test_rubash_binary_from_current_exe)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
         // Environment block for the child: process env merged with the
         // shell's env_vars (same filter the old Command::env loop applied).
         // rubash#2259: the process-env base crosses through the same
@@ -4980,11 +4985,16 @@ impl Executor {
             }
         }
         use std::process::{Command, Stdio};
-        let exe = std::env::var_os("CARGO_BIN_EXE_rubash")
-            .map(std::path::PathBuf::from)
-            .or_else(test_rubash_binary_from_current_exe)
-            .or_else(|| std::env::current_exe().ok())
-            .unwrap_or_else(|| "rubash".into());
+        // safebash: under an installed gate a respawn must re-run the
+        // gated shell itself, never an env/PATH-selected engine that could
+        // run the respawned body ungated (crate::exec_gate::respawn_exe).
+        let exe = crate::exec_gate::respawn_exe(|| {
+            std::env::var_os("CARGO_BIN_EXE_rubash")
+                .map(std::path::PathBuf::from)
+                .or_else(test_rubash_binary_from_current_exe)
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_else(|| "rubash".into())
+        });
 
         // rubash#1584: a simple-command coproc that the planner
         // admits spawns the program itself as the coproc process;
@@ -5397,7 +5407,7 @@ impl Executor {
                     child.env(key, value);
                 }
             }
-            match child.spawn() {
+            match crate::exec_gate::spawn(&mut child) {
                 Ok(mut child_proc) => {
                     // Rubash does not expose real coproc file descriptors yet,
                     // but keep the parent ends until after spawn so stdio uses

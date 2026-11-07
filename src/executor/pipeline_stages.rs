@@ -1955,7 +1955,7 @@ impl Executor {
         crate::executor::dev_fd_operands::attach_unix_dev_fd_operands(&mut process, &dev_ops);
         process.current_dir(&self.shell_state.cwd);
         suppress_orphan_console(&mut process);
-        let spawned = process.spawn();
+        let spawned = crate::exec_gate::spawn(&mut process);
         // The child holds its own duplicated inheritable handles;
         // close the parent-side duplicates the fd delivery opened —
         // the same unwind spawn_external_process performs once its
