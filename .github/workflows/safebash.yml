@@ -36,6 +36,16 @@ jobs:
         run: cargo test -p safebash --lib
       - name: safebash crate tests (contract, respawn_gate, corpus) (Linux)
         run: cargo test -p safebash --test contract --test respawn_gate --test brush_compat --test harvested --test pi_mode
+      - name: safebash interactive-terminal distinction (Linux pty)
+        # The stdlib `pty` module is always present on ubuntu-latest, so these
+        # legs run (they do not skip). They prove, under a real controlling
+        # terminal, that ordinary safebash prompts for a confirmable while
+        # SAFEBASH_NONINTERACTIVE=1 denies it without prompting.
+        # SAFEBASH_REQUIRE_PTY makes a missing interpreter a hard failure here
+        # rather than a silent skip (a skipped CI leg proves nothing).
+        env:
+          SAFEBASH_REQUIRE_PTY: "1"
+        run: cargo test -p safebash --test console_distinction
       - name: Check safebash crates (Linux target)
         run: cargo check --tests --target x86_64-unknown-linux-gnu -p safebash -p safebash-guard
 
@@ -58,5 +68,18 @@ jobs:
         run: cargo test -p safebash --test contract --test respawn_gate --test pi_mode
       - name: safebash corpus over-block guards (Windows)
         run: cargo test -p safebash --test brush_compat --test harvested
+      - name: Install pywinpty (Windows ConPTY driver for the distinction test)
+        # Install through `python -m pip` so pywinpty lands in the same
+        # interpreter the launcher resolves (`python`), not a stray pip target.
+        run: python -m pip install pywinpty
+      - name: safebash interactive-terminal distinction (Windows ConPTY)
+        # pywinpty gives a real ConPTY. A local probe confirmed ordinary safebash
+        # prompts under a ConPTY (console_attached holds), so these legs run and
+        # prove the same distinction as the Linux leg on the Windows console path.
+        # SAFEBASH_REQUIRE_PTY makes a missing/omitted pywinpty a hard failure
+        # rather than a silent skip.
+        env:
+          SAFEBASH_REQUIRE_PTY: "1"
+        run: cargo test -p safebash --test console_distinction
       - name: Check safebash crates (Windows MSVC target)
         run: cargo check --tests --target x86_64-pc-windows-msvc -p safebash -p safebash-guard
