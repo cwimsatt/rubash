@@ -17,11 +17,11 @@
 #[allow(dead_code, clippy::all)]
 mod engine;
 
-use safebash::{convert, gate, setup};
+use safebash::{apply_non_interactive, convert, gate, setup};
 use safebash_guard::audit::AuditLog;
 use safebash_guard::verdict::{Action, Layer};
 use safebash_guard::{Decision, Guard};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DENIED: i32 = 126;
 
@@ -53,11 +53,18 @@ fn main() {
     if let Some(flag) = args.get(1).filter(|a| a.starts_with("--guard-")) {
         std::process::exit(guard_cli(flag, &args[2..]));
     }
-    let posix = args
-        .first()
-        .and_then(|a| Path::new(a).file_name())
-        .is_some_and(|n| n == "sh");
-    let guard = build_guard(posix);
+    let arg0 = args.first().map(PathBuf::from);
+    let file_name = arg0.as_deref().and_then(|p| p.file_name());
+    let posix = file_name.is_some_and(|n| n == "sh");
+    let mut guard = build_guard(posix);
+    // Non-interactive host (e.g. the pi coding agent, which runs
+    // `safebash -c "<command>"` and cannot answer a prompt): a Confirm
+    // verdict becomes a denial and safebash never prompts (the no-approver
+    // branch in `Guard::decide`). The executable selects this itself - by its
+    // own name (`safebash-pi`) or the `SAFEBASH_NONINTERACTIVE` environment
+    // variable - never a command-line flag, because pi passes only `-c` and
+    // the command. See `docs/safebash/pi-integration.md`.
+    apply_non_interactive(&mut guard, file_name);
     if let Some(code) = preflight(&guard, &args) {
         std::process::exit(code);
     }
