@@ -267,6 +267,17 @@ const CASES: &[(Level, Place, &str, &str)] = &[
         "network.cloud-metadata",
         "curl http://169.254.169.254/latest/meta-data/",
     ),
+    // End-to-end (analyze_source) coverage for the host IP-canonicalization
+    // fix: a numeric spelling of the metadata address is denied, and a benign
+    // numeric host is still allowed. Need (a): the reproduced numeric bypass;
+    // need (e): the changed matcher's behaviour through the whole gate.
+    (
+        Level::Standard,
+        Place::Work,
+        "network.cloud-metadata",
+        "curl http://0xA9FEA9FE/",
+    ),
+    (Level::Standard, Place::Work, "allow", "curl http://12345/"),
     (
         Level::Standard,
         Place::Work,
