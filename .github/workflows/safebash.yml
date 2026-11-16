@@ -3,12 +3,17 @@ name: safebash
 # safebash's own CI: runs ONLY the safebash crates' tests, independent of the
 # inherited rubash engine workflows. On a fork those inherited workflows are
 # disabled; this is the active CI for the safebash safety layer + Windows port.
+#
+# Work branches (wp/**) run on every push, so a branch is tested on Linux and
+# Windows without opening a pull request. Nothing is built or tested locally:
+# clippy, formerly a local pre-push hook, is the `lint` job below.
 
 on:
   pull_request:
   push:
     branches:
       - master
+      - 'wp/**'
   workflow_dispatch:
 
 permissions:
@@ -19,6 +24,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  lint:
+    # The clippy gate, moved here from scripts/git-hooks/pre-push. Scoped to the
+    # safebash crates with --no-deps: the inherited rubash engine carries many
+    # pre-existing clippy findings that a workspace-wide gate would block on.
+    # Both systems run it because clippy only sees the code compiled for the
+    # system it runs on.
+    name: clippy, safebash crates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: clippy on safebash and safebash-guard (warnings are errors)
+        run: cargo clippy -p safebash -p safebash-guard --no-deps --all-targets -- -D warnings
+
   linux:
     name: safebash tests (Linux)
     runs-on: ubuntu-latest

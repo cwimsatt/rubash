@@ -1,23 +1,40 @@
 #!/bin/sh
-# Enforce clippy before every push (owner directive 2026-11-06): clippy is gated
-# locally since the pull-request CI runs only build + tests, not clippy. rustfmt
-# is already a pre-commit hook, so it is not repeated here (a workspace-wide
-# `cargo fmt` also overflows the command line on Windows, os error 206).
+# Refuse a push that deletes a branch or tag on the remote, or that rewrites
+# its history (a forced, non-fast-forward push). Owner directive 2026-11-16: no
+# repository deletions. This replaces the 2026-11-06 directive that ran clippy
+# here: clippy now runs in the safebash workflow
+# (.github/workflows/safebash.yml) on Linux and Windows, so a push compiles
+# nothing locally. rustfmt stays a pre-commit hook.
 #
-# clippy is scoped to the safebash crates with --no-deps: the inherited rubash
-# engine (forked from unixwin/rubash) carries ~800 pre-existing clippy warnings
-# and correctness-lint findings that a workspace-wide gate would block on. Gate
-# what we own; widen to --workspace once the engine is triaged. Uses the local
-# default cargo toolchain; keep it a current stable to match CI.
-# Do not bypass with --no-verify.
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "pre-push: cargo not found; skipping clippy check" >&2
-    exit 0
-fi
-if ! cargo clippy -p safebash -p safebash-guard --no-deps --all-targets -- -D warnings >/dev/null 2>&1; then
-    echo "pre-push: clippy reported warnings in safebash/safebash-guard (treated" >&2
-    echo "as errors). Fix them, or narrow/allow per crate, then re-push." >&2
-    cargo clippy -p safebash -p safebash-guard --no-deps --all-targets -- -D warnings 2>&1 | tail -40 >&2
-    exit 1
-fi
-exit 0
+# This hook is one of two guards. The other is the ruleset on the GitHub
+# repository, which holds whichever tool pushes. Do not bypass with --no-verify.
+#
+# git gives one line per pushed ref on standard input:
+#   <local ref> <local object> <remote ref> <remote object>
+# A deleted ref has an all-zero local object; a new ref has an all-zero remote
+# object.
+status=0
+while read -r local_ref local_oid remote_ref remote_oid; do
+    [ -n "$remote_ref" ] || continue
+    if printf '%s' "$local_oid" | grep -Eq '^0+$'; then
+        echo "pre-push: refusing to delete $remote_ref on the remote." >&2
+        status=1
+        continue
+    fi
+    if printf '%s' "$remote_oid" | grep -Eq '^0+$'; then
+        # A new branch or tag: there is no history to rewrite.
+        continue
+    fi
+    if ! git cat-file -e "$remote_oid^{commit}" 2>/dev/null; then
+        echo "pre-push: $remote_ref is at $remote_oid on the remote, and that commit is" >&2
+        echo "not in this repository. Fetch first, so that a history rewrite can be ruled out." >&2
+        status=1
+        continue
+    fi
+    if ! git merge-base --is-ancestor "$remote_oid" "$local_oid"; then
+        echo "pre-push: refusing a forced push to $remote_ref: the remote commit" >&2
+        echo "$remote_oid is not an ancestor of $local_oid ($local_ref)." >&2
+        status=1
+    fi
+done
+exit $status
